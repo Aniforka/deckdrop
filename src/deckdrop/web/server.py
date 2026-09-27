@@ -277,16 +277,16 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/download":
                 self.send_json(start_download(s("url"), s("disk") or None).to_dict())
             elif path == "/api/mega/list":
-                self.send_json({"ok": True} | mega_probe(s("url")))
+                self.send_json({"ok": True, **mega_probe(s("url"))})
             elif path == "/api/mega/download":
                 self.send_json({"ok": True, "jobs": start_mega_downloads(
                     s("url"), body.get("nodes") or [], s("disk") or None)})
             elif path == "/api/game/archive/unlock":
-                self.send_json({"ok": True} | patch_unlock(s("token"), str(body.get("password") or ""),
-                                                           bool(body.get("remember"))))
+                self.send_json({"ok": True, **patch_unlock(s("token"), str(body.get("password") or ""),
+                                                           bool(body.get("remember")))})
             elif path == "/api/game/archive/apply":
-                self.send_json({"ok": True} | patch_apply(s("token"), bool(body.get("strip")),
-                                                          body.get("backup", True) is not False))
+                self.send_json({"ok": True, **patch_apply(s("token"), bool(body.get("strip")),
+                                                          body.get("backup", True) is not False)})
             elif path == "/api/game/archive/discard":
                 _patch_drop(s("token"))
                 self.send_json({"ok": True})
@@ -295,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/cancel_all":
                 self.send_json({"ok": True, "stopped": cancel_all()})
             elif path == "/api/inbox/clear":
-                self.send_json({"ok": True} | inbox_clear())
+                self.send_json({"ok": True, **inbox_clear()})
             elif path == "/api/clear":
                 with LOCK:
                     for k in [k for k, j in JOBS.items() if j.status in ("done", "error", "cancelled")]:
@@ -316,15 +316,15 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=art_worker, args=(str(p), True, False, source, s("vn") or None), daemon=True).start()
                 self.send_json({"ok": True, "note": "делаю обложки"})
             elif path == "/api/art/from_exe":
-                self.send_json({"ok": True} | art_from_exe(s("game"), s("exe"), s("slot")))
+                self.send_json({"ok": True, **art_from_exe(s("game"), s("exe"), s("slot"))})
             elif path == "/api/art/from_url":
-                self.send_json({"ok": True} | art_from_url(s("game"), s("exe"), s("slot"), s("url"), s("vn") or None))
+                self.send_json({"ok": True, **art_from_url(s("game"), s("exe"), s("slot"), s("url"), s("vn") or None)})
             elif path == "/api/game/rename":
                 self.send_json({"ok": True, "note": rename_shortcut(s("game"), s("exe"), s("name"))})
             elif path == "/api/game/compat":
                 self.send_json({"ok": True, "note": set_compat_for(s("game"), s("exe"), s("tool"))})
             elif path == "/api/game/import":
-                self.send_json({"ok": True} | import_game(s("path")))
+                self.send_json({"ok": True, **import_game(s("path"))})
             elif path == "/api/game/unimport":
                 self.send_json({"ok": True, "removed": unimport_game(s("path"))})
             elif path == "/api/game/hide":
@@ -434,20 +434,20 @@ class Handler(BaseHTTPRequestHandler):
                 if n > 25 << 20:
                     raise ValueError("файл больше 25 МБ")
                 data = self.rfile.read(n)
-                self.send_json({"ok": True} | custom_art(self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "slot"), data))
+                self.send_json({"ok": True, **custom_art(self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "slot"), data)})
             elif path == "/api/game/archive":
-                self.send_json({"ok": True} | patch_upload(
-                    self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "dir"), self.q1(q, "name"), self.read_body_to))
+                self.send_json({"ok": True, **patch_upload(
+                    self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "dir"), self.q1(q, "name"), self.read_body_to)})
             elif path == "/api/game/file":
-                self.send_json({"ok": True} | game_file_upload(
+                self.send_json({"ok": True, **game_file_upload(
                     self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "dir"), self.q1(q, "name"),
-                    self.q1(q, "replace") == "1", self.read_body_to))
+                    self.q1(q, "replace") == "1", self.read_body_to)})
             elif path == "/api/saves/import":
                 CACHE_DIR.mkdir(parents=True, exist_ok=True)
                 tmp = CACHE_DIR / f"import_{secrets.token_hex(4)}.zip"
                 try:
                     self.read_body_to(tmp)
-                    self.send_json({"ok": True} | import_saves_zip(self.q1(q, "game"), self.q1(q, "exe"), tmp))
+                    self.send_json({"ok": True, **import_saves_zip(self.q1(q, "game"), self.q1(q, "exe"), tmp)})
                 finally:
                     tmp.unlink(missing_ok=True)
             else:

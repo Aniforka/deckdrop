@@ -1,4 +1,5 @@
 """Unit tests for pure helpers: python -m unittest discover -s tests"""
+import ast
 import contextlib
 import os
 import sys
@@ -94,6 +95,22 @@ class NamesTest(unittest.TestCase):
         self.assertEqual(clean_title("Cool_Game-v1.2 (x64)"), "Cool Game")
         self.assertEqual(clean_title("game"), "Game")
         self.assertEqual(recommend(["unins000.exe", "Game.exe", "bin/Launcher.exe"]), "Game.exe")
+
+
+class Python38Test(unittest.TestCase):
+    """SteamOS ships 3.11, but 3.8 is the promised minimum and CI runs it."""
+
+    def test_no_dict_union_operator(self):
+        # {...} | x needs 3.9; pyflakes and a 3.8 syntax check do not catch it
+        found = []
+        for path in sorted((Path(__file__).resolve().parent.parent / "src").rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text("utf-8"))):
+                if (isinstance(node, (ast.BinOp, ast.AugAssign)) and isinstance(node.op, ast.BitOr)
+                        and any(isinstance(side, ast.Dict)
+                                for side in (getattr(node, "left", None), getattr(node, "right", None),
+                                             getattr(node, "value", None)))):
+                    found.append(f"{path.name}:{node.lineno}")
+        self.assertEqual(found, [], "dict | dict needs Python 3.9: use {**a, **b}")
 
 
 if __name__ == "__main__":
