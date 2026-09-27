@@ -1,0 +1,93 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0e1621"><title>DeckDrop</title>
+<style>
+/*@app.css*/</style></head><body>
+<header><div class="hin"><div class="logo">D</div><span class="brand">DeckDrop</span><span class="chip" id="ver"></span><span class="chip click addr" id="addr" title="скопировать адрес"></span>
+<button class="ghost icon" id="settings" title="настройки">⚙</button>
+<div class="seg"><button id="tabGames" class="on">Игры</button><button id="tabArch">Архивы</button><button id="tabMedia">Медиа</button><button id="tabSettings">Настройки</button></div></div></header>
+<div class="wrap">
+<div id="pgGames">
+<div id="gameList">
+ <div class="card"><h2>Добавить <select class="sel" id="disk" title="куда скачивать"></select></h2>
+  <div class="row"><input id="url" type="text" placeholder="Ссылка на файл: прямая, Mega, Яндекс.Диск, Google Drive" autocomplete="off"><button id="go">Скачать</button></div>
+  <div class="drop" id="drop"><div class="ic">⤓</div>Перетащи сюда файл или ссылку, либо просто Ctrl+V<br><label>выбрать файлы<input id="file" type="file" multiple></label></div>
+ </div>
+ <div class="card"><h2>Задания <span class="acts"><button class="danger sm" id="stopAll" hidden>остановить всё</button><button class="ghost sm" id="clear">очистить</button></span></h2><div id="jobs"></div></div>
+ <div class="card"><h2>Игры <span class="acts"><button class="ghost sm" id="importGame">+ своя игра</button><button class="ghost sm" id="toggleHidden"></button></span></h2><div id="games"></div></div>
+</div>
+<div id="gamePage" hidden>
+ <div class="row" style="margin-top:14px"><button class="ghost sm" id="gpBack">← к списку</button></div>
+ <div class="card" id="gpHead"></div>
+ <div class="card"><h2>Запуск</h2><div class="hint" style="margin-bottom:4px">Файл, добавленный в Steam, отмечен галочкой. Proton меняется прямо здесь.</div><div id="gpExes"></div></div>
+ <div class="card" id="gpCoversCard" hidden><h2>Обложки <span class="acts"><button class="ghost sm" id="gpVndb">VNDB…</button><button class="ghost sm" id="gpIcon">из иконки exe</button></span></h2><div class="hint" id="gpCvHint"></div><div class="covers" id="gpCovers"></div></div>
+ <div class="card" id="gpSavesCard" hidden><h2>Сейвы <span class="acts"><a id="gpSvDl"><button class="ghost sm" id="gpSvDlB">скачать бэкап</button></a><button class="ghost sm" id="gpSvImp">импортировать zip</button></span></h2><div class="hint" id="gpSaves"></div></div>
+ <div class="card" id="gpFilesCard" hidden><h2>Файлы игры <span class="acts"><button class="ghost sm" id="gpFArch">распаковать архив…</button><button class="ghost sm" id="gpFUp">загрузить…</button></span></h2>
+  <div class="hint">Положить патч или любой другой файл в папку игры. Путь считается от папки с exe: пусто — рядом с exe, <code>data/patch</code> — в подпапку, <code>../</code> — на уровень выше, но не за пределы игры. Если такой файл уже есть, DeckDrop спросит, а самый первый вариант сохранит рядом как <code>.bak</code>. Архив с патчем можно распаковать сюда же: DeckDrop сначала покажет, что он поменяет.</div>
+  <div class="frow" id="gpFExeRow" hidden><label for="gpFExe">От какого exe</label><select id="gpFExe"></select></div>
+  <div class="frow"><label for="gpFDir">Путь от exe</label><input id="gpFDir" type="text" placeholder="пусто — рядом с exe" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="hint" id="gpFWhere"></div><div id="gpFList"></div>
+ </div>
+ <div class="card"><h2>Действия</h2><div class="acts" id="gpActs"></div></div>
+ <div class="card"><h2>Сведения</h2><div class="hint" id="gpInfo"></div></div>
+</div>
+</div>
+<div id="pgArch" hidden>
+ <div class="card"><h2>Скачанные архивы <span class="acts"><span class="chip" id="archTotal"></span><button class="ghost sm" id="archCleanup">удалить распакованные</button><button class="danger sm" id="inboxClear">очистить всё</button></span></h2>
+ <div class="hint" style="margin-bottom:6px">Архивы лежат в папке <code>_inbox</code> на каждом диске и после распаковки больше не нужны. Распакованные можно удалить одним нажатием, нераспакованные распаковать отсюда.</div>
+ <div id="archives"></div></div>
+</div>
+<div id="pgMedia" hidden>
+ <div id="mediaAuth"></div>
+ <div id="mediaBody" hidden>
+  <div class="card"><div class="chips"><button data-f="all" class="on">Все</button><button data-f="image">Скриншоты</button><button data-f="video">Видео</button>
+   <input id="mq" type="search" placeholder="поиск по игре"><button class="ghost sm" id="mrefresh" title="пересканировать">⟳</button></div>
+   <div class="muted" id="mhint" style="font-size:.85em;margin-bottom:10px"></div>
+   <div class="grid" id="mgrid"></div></div>
+ </div>
+</div>
+<div id="pgSettings" hidden>
+ <div class="card"><h2>Steam</h2>
+  <div class="hint" id="sCdpTxt" style="margin-bottom:6px"></div>
+  <div class="frow"><label for="sCompat">Proton по умолчанию для всех новых игр</label><select id="sCompat" data-set="default_compat"></select>
+   <div class="hint" style="margin-top:6px">Применяется к играм, которые добавляются после смены. У уже добавленных Proton меняется в карточке игры.</div></div>
+  <label class="chk"><input type="checkbox" id="sLinux" data-set="prefer_linux">Предпочитать Linux-сборку, если она есть в архиве: идёт нативно, без Proton</label>
+  <label class="chk"><input type="checkbox" id="sCef" data-set="cef_enabled">Управлять Steam через отладочный порт, как Decky</label>
+ </div>
+ <div class="card"><h2>Обложки</h2>
+  <label class="chk"><input type="checkbox" id="sVndb" data-set="vndb_auto">Искать обложки на VNDB автоматически (экспериментально)</label>
+  <label class="chk"><input type="checkbox" id="sSafe" data-set="vndb_nsfw" data-invert="1">Пропускать картинки 18+ с VNDB</label>
+ </div>
+ <div class="card"><h2>Сеть</h2>
+  <div class="hint">Прокси используется <b>только самим DeckDrop</b>, остальной дек ходит в интернет как обычно.
+   Нужен, когда провайдер рвёт соединение с VNDB. Формат: <code>socks5://хост:порт</code> или <code>http://хост:порт</code>,
+   можно с логином: <code>socks5://user:pass@хост:порт</code>. Если на домашнем ПК уже стоит VPN-клиент с локальным
+   входом SOCKS5, подойдёт адрес этого ПК, например <code>socks5://192.168.1.10:10808</code> (в клиенте надо разрешить
+   подключения из локальной сети).</div>
+  <div class="frow"><label>Прокси для запросов DeckDrop</label><div class="row wrap"><code id="sProxyView" style="flex:1;min-width:160px;word-break:break-all"></code><button class="ghost sm" id="sProxyEdit">изменить 🔒</button></div><div class="hint" style="margin-top:6px">Логин и пароль прокси не показываются и не уходят на страницу без PIN.</div></div>
+  <label class="chk"><input type="checkbox" id="sProxyDl" data-set="proxy_downloads">Через прокси качать и сами игры (медленнее, но обходит блокировки файлохостингов)</label>
+  <div class="row"><button class="ghost sm" id="sTest">Проверить связь с VNDB</button></div>
+  <div class="hint" id="sTestRes"></div>
+ </div>
+ <div class="card"><h2>Mega</h2>
+  <div class="hint">Ссылки <code>mega.nz</code> работают как обычные. Mega шифрует файлы у себя в браузере,
+   ключ лежит в самой ссылке после решётки — копируй её целиком, иначе расшифровать нечем. Файл приходит
+   зашифрованным и расшифровывается прямо на деке. Ссылка на папку откроет список: отметь, что качать, и отмеченное скачается одной игрой со всеми папками.
+   Файлы качаются по одному — Mega не любит несколько соединений с одного адреса.</div>
+  <label class="chk"><input type="checkbox" id="sMega" data-set="mega_verify">Проверять контрольную сумму Mega после скачивания</label>
+ </div>
+ <div class="card"><h2>Архивы</h2>
+  <div class="frow"><label for="sPw">Пароли, которые пробовать автоматически (через запятую)</label><input id="sPw" type="text" data-set="archive_passwords" placeholder="anivisual, 1234" autocomplete="off"></div>
+ </div>
+ <div class="card"><h2>Обновление и PIN</h2>
+  <div class="frow"><label for="sUpd">Откуда обновлять утилиту</label><input id="sUpd" type="text" data-set="update_url" autocomplete="off"></div>
+  <div class="frow"><label>Сменить PIN</label><div class="row wrap"><input id="sPinOld" type="password" inputmode="numeric" placeholder="текущий" autocomplete="off"><input id="sPinNew" type="password" inputmode="numeric" placeholder="новый, 4–8 цифр" autocomplete="off"><button class="sm" id="sPinGo">Сменить</button></div></div>
+ </div>
+ <div class="card"><h2>О системе</h2><div class="hint" id="sInfo"></div></div>
+</div>
+<footer><span id="ffm"></span><span class="acts"><button class="ghost sm" id="mediaReset">сбросить пароль медиа</button><button class="ghost sm" id="update">Обновить утилиту</button></span></footer>
+</div>
+<div id="viewer"><div class="vbar"><span class="t" id="vtitle"></span><a id="vopen" target="_blank" rel="noopener"><button class="ghost sm">открыть</button></a><a id="vdl"><button class="ghost sm">скачать</button></a><button class="danger sm" id="vdel">удалить с дека 🔒</button><button class="ghost sm" id="vclose">✕</button></div><div class="vbody" id="vbody"></div></div>
+<div id="modal"><div class="mbox" id="mbox"></div></div>
+<div id="toasts"></div>
+<script>
+/*@app.js*/</script></body></html>

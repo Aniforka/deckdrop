@@ -25,735 +25,50 @@ Env overrides: DECKDROP_PORT (8088), DECKDROP_GAMES (~/Games), DECKDROP_STATE (s
                DECKDROP_STEAM (Steam root), DECKDROP_UPDATE_URL, DECKDROP_PIN (initial admin PIN, random if unset),
                DECKDROP_DISKS (extra roots "label=path;..."), DECKDROP_CEF=0 (no Steam control),
                DECKDROP_CEF_PORT (8080), DECKDROP_EXTRACT=0 (don't unpack), DECKDROP_KEEP=0
+
+This file is built from src/deckdrop by tools/build.py: edit the sources, not this file.
 """
 __version__ = "0.3.24"
+DEFAULT_PORT = ("DECKDROP_PORT", "8088")   # read by the updater of installed copies
 
-import base64
-import hashlib
-import http.client
-import hmac
-import json
-import mmap
+_MODULES = {
+    'deckdrop': (True, 'deckdrop/__init__.py', r'''"""DeckDrop - LAN inbox, Steam helper and media gallery for Steam Deck.
+
+Open http://<deck>.local:8088 from a phone or PC, paste a link or drop a file.
+The Deck downloads it (to the internal disk or a microSD, Mega links included,
+decrypted on the fly), unpacks archives
+(asking for a password when needed), adds the game to Steam under a clean name,
+picks the default Proton, and sets every kind of Steam cover art: from VNDB for
+visual novels, or built from the exe icon. Extra tabs: archives, and a
+password-protected gallery of Steam screenshots and clips. Save games can be
+backed up to a zip and imported back.
+
+Steam is driven live through its CEF remote-debugging port (the same mechanism
+Decky Loader uses). DeckDrop enables it with a marker file; it becomes active
+after one Steam restart (a Deck reboot). Until then, name/Proton changes are
+queued and applied automatically later.
+
+Stdlib only, runs on stock SteamOS (nothing to install, survives OS updates).
+
+    python3 deckdrop.py             run in foreground
+    python3 deckdrop.py --install   install as a systemd user service (autostart, works in Gaming Mode)
+    python3 deckdrop.py --uninstall
+
+Env overrides: DECKDROP_PORT (8088), DECKDROP_GAMES (~/Games), DECKDROP_STATE (state file),
+               DECKDROP_STEAM (Steam root), DECKDROP_UPDATE_URL, DECKDROP_PIN (initial admin PIN, random if unset),
+               DECKDROP_DISKS (extra roots "label=path;..."), DECKDROP_CEF=0 (no Steam control),
+               DECKDROP_CEF_PORT (8080), DECKDROP_EXTRACT=0 (don't unpack), DECKDROP_KEEP=0
+"""
+__version__ = "0.3.24"
+'''),
+    'deckdrop.aes': (False, 'deckdrop/aes.py', r'''"""AES for Mega: libcrypto through ctypes, pure Python fallback."""
+
 import os
-import re
-import secrets
-import shutil
-import socket
-import ssl
-import struct
-import subprocess
 import sys
-import threading
-import time
-import zipfile
-import zlib
-import urllib.error
-import urllib.parse
-import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PORT = int(os.environ.get("DECKDROP_PORT", "8088"))
-CEF_PORT = int(os.environ.get("DECKDROP_CEF_PORT", "8080"))
-CEF_ENABLED = os.environ.get("DECKDROP_CEF", "1") != "0"
-GAMES_DIR = Path(os.environ.get("DECKDROP_GAMES", str(Path.home() / "Games")))
-STATE_FILE = Path(os.environ.get("DECKDROP_STATE", str(Path.home() / ".config" / "deckdrop" / "state.json")))
-CACHE_DIR = Path.home() / ".cache" / "deckdrop"
-AUTO_EXTRACT = os.environ.get("DECKDROP_EXTRACT", "1") != "0"
-KEEP_ARCHIVE = os.environ.get("DECKDROP_KEEP", "1") != "0"
-UPDATE_URL_DEFAULT = os.environ.get("DECKDROP_UPDATE_URL",
-                                    "https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py")
-# where versions up to 0.3.23 updated from; a remembered copy of it is moved to the release link
-UPDATE_URL_LEGACY = ("https://raw.githubusercontent.com/aniforka/deckdrop/main/deckdrop.py",)
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-VNDB_UA = f"DeckDrop/{__version__} (Steam Deck cover art)"
-ARCHIVE_EXTS = (".zip", ".7z", ".rar", ".tar", ".tgz", ".txz", ".tbz2",
-                ".tar.gz", ".tar.xz", ".tar.bz2")
-# executables that are almost never the game itself
-SKIP_EXE = re.compile(r"unins|vc_?redist|dxsetup|dxwebsetup|crashhandler|"
-                      r"^python|notification_helper|^setup_?vc|^unitycrash", re.I)
-LINUX_EXTS = (".sh", ".x86_64", ".x86")
-CHUNK = 1 << 20
-PNG_SIG = b"\x89PNG\r\n\x1a\n"
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
-MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
-        ".webp": "image/webp", ".mp4": "video/mp4", ".m4v": "video/mp4", ".mkv": "video/x-matroska",
-        ".webm": "video/webm", ".mov": "video/quicktime", ".svg": "image/svg+xml",
-        ".zip": "application/zip"}
-FFMPEG = shutil.which("ffmpeg")
+from .config import log
 
-
-def _steam_root():
-    env = os.environ.get("DECKDROP_STEAM")
-    if env:
-        return Path(env)
-    for cand in (Path.home() / ".local/share/Steam", Path.home() / ".steam/steam", Path.home() / ".steam/root"):
-        if (cand / "userdata").is_dir():
-            return cand
-    return Path.home() / ".local/share/Steam"
-
-
-STEAM_ROOT = _steam_root()
-MEDIA_DIRS = [Path.home() / "Videos", Path.home() / "Pictures"]
-
-
-def log(msg):
-    sys.stderr.write(time.strftime("%H:%M:%S ") + msg + "\n")
-    sys.stderr.flush()
-
-# --------------------------------------------------------------------------- persistent state
-
-STATE_LOCK = threading.RLock()
-STATE = {
-    "admin_pin": os.environ.get("DECKDROP_PIN", ""),   # empty: a random one is made on first start
-    "hidden": [],                 # game dirs hidden from the list
-    "imported": [],               # single game folders located outside the DeckDrop roots
-    "added": {},                  # exe path -> {at, appid, name, art, ...}
-    "pending": [],                # steam ops waiting for CEF control: {op, exe, ...}
-    "update_url": UPDATE_URL_DEFAULT,
-    "media_pw": None,             # {salt, hash}
-    "default_compat": "proton_experimental",
-    "prefer_linux": True,
-    "vndb_auto": True,
-    "vndb_nsfw": True,             # False = skip 18+ images from VNDB
-    "archive_passwords": [],
-    "default_disk": "internal",
-    "proxy": "",                  # DeckDrop-only proxy: socks5://host:port or http://host:port
-    "proxy_downloads": False,     # also route game downloads through it
-    "mega_verify": True,          # check Mega's own checksum after a download
-    "cef_enabled": CEF_ENABLED,
-}
-SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "archive_passwords",
-                "default_disk", "cef_enabled", "update_url", "proxy", "proxy_downloads",
-                "mega_verify")
-PROTECTED_KEYS = ("proxy",)   # may carry credentials: PIN required to read or change
-
-
-def load_state():
-    try:
-        data = json.loads(STATE_FILE.read_text("utf-8"))
-        if isinstance(data, dict):
-            STATE.update(data)
-    except (OSError, ValueError):
-        pass
-    if str(STATE.get("update_url") or "").strip().lower() in UPDATE_URL_LEGACY:
-        STATE["update_url"] = UPDATE_URL_DEFAULT
-
-
-def save_state():
-    with STATE_LOCK:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(STATE, ensure_ascii=False, indent=1), "utf-8")
-        os.replace(tmp, STATE_FILE)
-
-
-def set_state(**kv):
-    with STATE_LOCK:
-        STATE.update(kv)
-        save_state()
-
-
-def added_rec(exe, create=False):
-    with STATE_LOCK:
-        recs = STATE.setdefault("added", {})
-        if create and exe not in recs:
-            recs[exe] = {"at": int(time.time())}
-        return dict(recs.get(exe, {}))
-
-
-def update_added(exe, **kv):
-    with STATE_LOCK:
-        rec = STATE.setdefault("added", {}).setdefault(exe, {"at": int(time.time())})
-        rec.update(kv)
-        save_state()
-
-
-def check_pin(pin):
-    stored = str(STATE.get("admin_pin") or "")
-    ok = bool(stored) and hmac.compare_digest(str(pin or ""), stored)
-    if not ok:
-        time.sleep(1)  # slow down guessing
-        raise PermissionError("неверный PIN")
-
-
-def ensure_pin():
-    """Give a fresh install a random admin PIN. Returns True when one was just made."""
-    if STATE.get("admin_pin"):
-        return False
-    set_state(admin_pin=f"{secrets.randbelow(10 ** 4):04d}")
-    return True
-
-
-def pw_hash(password, salt=None):
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
-    return {"salt": salt, "hash": digest}
-
-
-MEDIA_TOKENS = {}  # token -> expiry
-
-
-def media_login(password):
-    rec = STATE.get("media_pw")
-    if not rec:
-        raise PermissionError("пароль медиа ещё не задан")
-    if not hmac.compare_digest(pw_hash(password, rec["salt"])["hash"], rec["hash"]):
-        time.sleep(1)
-        raise PermissionError("неверный пароль")
-    token = secrets.token_urlsafe(24)
-    now = time.time()
-    for t, exp in list(MEDIA_TOKENS.items()):
-        if exp < now:
-            del MEDIA_TOKENS[t]
-    MEDIA_TOKENS[token] = now + 12 * 3600
-    return token
-
-
-def media_token_ok(token):
-    return bool(token) and MEDIA_TOKENS.get(token, 0) > time.time()
-
-# --------------------------------------------------------------------------- disks / roots
-
-def sd_mounts():
-    """Removable media mounted by SteamOS (/run/media/...) plus DECKDROP_DISKS extras."""
-    out = []
-    for base in (Path("/run/media"), Path("/run/media/deck")):
-        if not base.is_dir():
-            continue
-        for d in base.iterdir():
-            try:
-                if d.is_dir() and d.name != "deck" and os.path.ismount(d):
-                    out.append((d.name if d.name != "mmcblk0p1" else "microSD", d))
-            except OSError:
-                continue
-    for extra in os.environ.get("DECKDROP_DISKS", "").split(";"):
-        if "=" in extra:
-            label, p = extra.split("=", 1)
-            if Path(p).is_dir():
-                out.append((label.strip(), Path(p)))
-    return out
-
-
-def disks():
-    """[{id, label, root, free, total}] - internal first, then removable media."""
-    res = []
-
-    def add(disk_id, label, root):
-        probe = root if root.exists() else root.parent
-        try:
-            u = shutil.disk_usage(probe)
-            free, total = u.free, u.total
-        except OSError:
-            free = total = None
-        res.append({"id": disk_id, "label": label, "root": str(root), "free": free, "total": total})
-
-    add("internal", "Внутренний", GAMES_DIR)
-    for label, mount in sd_mounts():
-        add("sd:" + mount.name, label, mount / "Games")
-    return res
-
-
-def root_for(disk_id):
-    for d in disks():
-        if d["id"] == disk_id:
-            return Path(d["root"])
-    return GAMES_DIR
-
-
-def default_root():
-    return root_for(STATE.get("default_disk") or "internal")
-
-
-def game_roots():
-    return [Path(d["root"]) for d in disks()]
-
-
-def disk_label_for(path):
-    p = Path(path).resolve()
-    best = None
-    for d in disks():
-        r = Path(d["root"]).resolve()
-        if (r == p or r in p.parents) and (best is None or len(str(r)) > len(str(best[0]))):
-            best = (r, d["label"])
-    if best:
-        return best[1]
-    for label, mount in sd_mounts():          # imported game on a card, outside <mount>/Games
-        try:
-            if mount.resolve() in p.parents:
-                return label
-        except OSError:
-            continue
-    return "Внутренний" if inside(Path.home(), p) else "своя папка"
-
-
-def inside(root, path):
-    root = Path(root).resolve()
-    path = Path(path).resolve()
-    return root == path or root in path.parents
-
-
-def imported_dirs():
-    """Game folders the user pointed DeckDrop at. Each entry is one game, not a folder of games."""
-    out = []
-    for raw in STATE.get("imported") or []:
-        try:
-            p = Path(raw).resolve()
-        except OSError:
-            continue
-        if p.is_dir():
-            out.append(p)
-    return out
-
-
-# import is limited to places that belong to the user, so a typo cannot point DeckDrop at /etc
-IMPORT_ROOTS = (Path.home(), Path("/run/media"), Path("/media"), Path("/mnt"))
-
-
-def import_allowed(path):
-    return any(inside(r, path) for r in IMPORT_ROOTS if r.exists())
-
-
-def inside_any(path):
-    return any(inside(r, path) for r in game_roots()) or any(inside(d, path) for d in imported_dirs())
-
-# --------------------------------------------------------------------------- jobs
-
-class Job:
-    _seq = 0
-
-    def __init__(self, kind, label, root=None):
-        Job._seq += 1
-        self.id = Job._seq
-        self.kind = kind            # download | upload | extract
-        self.label = label
-        self.status = "queued"      # queued resolving downloading uploading extracting needs_password done error
-        self.done = 0
-        self.total = 0
-        self.file = None
-        self.game_dir = None
-        self.error = None
-        self.cancel = False
-        self.work = None            # file or folder being written now, spared by the inbox cleanup
-        self.root = Path(root) if root else default_root()
-        self.started = time.time()
-
-    def to_dict(self):
-        elapsed = max(time.time() - self.started, 0.001)
-        return {
-            "id": self.id, "kind": self.kind, "label": self.label, "status": self.status,
-            "done": self.done, "total": self.total,
-            "speed": int(self.done / elapsed) if self.status in ("downloading", "uploading") else 0,
-            "file": self.file, "game_dir": self.game_dir, "error": self.error,
-            "disk": disk_label_for(self.root),
-        }
-
-
-JOBS = {}
-LOCK = threading.Lock()
-ACTIVE = ("queued", "resolving", "downloading", "uploading", "extracting")
-CANCELLABLE = ("queued", "resolving", "downloading")
-
-
-def new_job(kind, label, root=None):
-    with LOCK:
-        job = Job(kind, label, root)
-        JOBS[job.id] = job
-    return job
-
-# --------------------------------------------------------------------------- names / paths
-
-def safe_name(name):
-    name = urllib.parse.unquote(name)
-    name = name.replace("\\", "/").rsplit("/", 1)[-1]
-    name = re.sub(r'[\x00-\x1f<>:"|?*]', "_", name).strip(" .")
-    return name or "download.bin"
-
-
-def archive_ext(name):
-    low = name.lower()
-    for ext in sorted(ARCHIVE_EXTS, key=len, reverse=True):
-        if low.endswith(ext):
-            return ext
-    return None
-
-
-def split_ext(name):
-    ext = archive_ext(name) or Path(name).suffix
-    return (name[:-len(ext)] if ext else name), ext
-
-
-def archive_volume(name):
-    """'primary' for an archive or the first part of a split one, 'secondary' for the other parts."""
-    low = name.lower()
-    m = re.search(r"\.part(\d+)\.rar$", low) or re.search(r"\.(?:7z|zip|rar|tar)\.(\d{3})$", low)
-    if m:
-        return "primary" if int(m.group(1)) == 1 else "secondary"
-    if re.search(r"\.[rz]\d{2}$", low):
-        return "secondary"                    # old-style .r00 / .z01 next to the .rar / .zip
-    return "primary" if archive_ext(name) else None
-
-
-def archive_stem(name):
-    """Game folder name for an archive: 'Game.part1.rar' and 'Game.7z.001' both give 'Game'."""
-    stem, _ = split_ext(name)
-    return re.sub(r"(?:\.part\d+|\.(?:7z|zip|rar|tar))$", "", stem, flags=re.I) or stem
-
-
-def reserve_path(directory, name):
-    """Pick a non-existing path in `directory` and reserve its .part file."""
-    directory.mkdir(parents=True, exist_ok=True)
-    stem, ext = split_ext(name)
-    with LOCK:
-        i = 1
-        while True:
-            cand = directory / (name if i == 1 else f"{stem} ({i}){ext}")
-            part = cand.with_name(cand.name + ".part")
-            if not cand.exists() and not part.exists():
-                part.touch()
-                return cand, part
-            i += 1
-
-
-def unique_dir(directory, name):
-    i = 1
-    while True:
-        cand = directory / (name if i == 1 else f"{name} ({i})")
-        if not cand.exists():
-            return cand
-        i += 1
-
-
-def filename_from_response(headers, url):
-    cd = headers.get("Content-Disposition", "") or ""
-    m = re.search(r"filename\*\s*=\s*([^']*)'[^']*'([^;]+)", cd)
-    if m:
-        try:
-            return safe_name(urllib.parse.unquote(m.group(2).strip(), encoding=m.group(1) or "utf-8"))
-        except (UnicodeError, LookupError):
-            pass
-    m = re.search(r'filename\s*=\s*"([^"]+)"', cd) or re.search(r"filename\s*=\s*([^;]+)", cd)
-    if m:
-        return safe_name(m.group(1).strip())
-    tail = urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]
-    return safe_name(tail) if tail else "download.bin"
-
-# --------------------------------------------------------------------------- resolvers
-
-# --------------------------------------------------------------------------- network: DeckDrop-only proxy
-
-SOCKS_ERR = {1: "общая ошибка прокси", 2: "прокси запретил соединение", 3: "сеть недоступна",
-             4: "хост недоступен", 5: "соединение отклонено", 6: "истёк TTL",
-             7: "команда не поддерживается", 8: "тип адреса не поддерживается"}
-
-
-def mask_proxy(url):
-    """Proxy string with the credentials blanked out, safe to show without the PIN."""
-    url = (url or "").strip()
-    if not url:
-        return ""
-    try:
-        u = urllib.parse.urlparse(url)
-    except ValueError:
-        return "***"
-    if not (u.username or u.password):
-        return url
-    host = u.hostname or ""
-    if u.port:
-        host += f":{u.port}"
-    return f"{u.scheme}://***:***@{host}"
-
-
-def proxy_url():
-    return (STATE.get("proxy") or "").strip() or None
-
-
-def dl_proxy():
-    return proxy_url() if STATE.get("proxy_downloads") else None
-
-
-def net_reason(e):
-    """Network exception -> short Russian explanation with a hint about blocking."""
-    err = e
-    while isinstance(err, urllib.error.URLError) and not isinstance(err, urllib.error.HTTPError):
-        err = err.reason if isinstance(err.reason, BaseException) else err.reason
-        break
-    if isinstance(e, urllib.error.HTTPError):
-        return f"HTTP {e.code} {e.reason}"
-    text = str(err) or type(e).__name__
-    low = text.lower()
-    if "reset" in low or "104" in low or "10054" in low:
-        return f"соединение сброшено ({text}). Обычно это блокировка со стороны сети: попробуй прокси в настройках"
-    if "timed out" in low or "timeout" in low:
-        return f"нет ответа ({text}). Похоже на блокировку или медленную сеть: попробуй прокси в настройках"
-    if "name or service" in low or "getaddrinfo" in low or "resolve" in low:
-        return f"имя хоста не разрешается ({text}): проверь интернет на деке"
-    if "refused" in low:
-        return f"соединение отклонено ({text})"
-    if "certificate" in low or "ssl" in low:
-        return f"ошибка TLS ({text})"
-    return text
-
-
-def _recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError("прокси закрыл соединение")
-        buf += chunk
-    return buf
-
-
-def socks5_connect(px, dest_host, dest_port, timeout):
-    """Open a TCP connection to dest through a SOCKS5 proxy (RFC 1928, optional user/password auth).
-
-    Hostnames are sent to the proxy, so DNS is resolved on the proxy side too - that is what
-    makes it work when the local resolver or route to the host is blocked.
-    """
-    sock = socket.create_connection((px.hostname, px.port or 1080), timeout)
-    try:
-        sock.settimeout(timeout)
-        methods = b"\x00\x02" if px.username else b"\x00"
-        sock.sendall(bytes([5, len(methods)]) + methods)
-        ver, method = _recv_exact(sock, 2)
-        if ver != 5:
-            raise ConnectionError("это не SOCKS5-прокси")
-        if method == 2:
-            u = urllib.parse.unquote(px.username or "").encode()
-            pw = urllib.parse.unquote(px.password or "").encode()
-            sock.sendall(bytes([1, len(u)]) + u + bytes([len(pw)]) + pw)
-            if _recv_exact(sock, 2)[1] != 0:
-                raise ConnectionError("прокси не принял логин или пароль")
-        elif method != 0:
-            raise ConnectionError("прокси требует авторизацию, которую я не умею")
-        host = dest_host.encode("idna")
-        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host + struct.pack(">H", dest_port))
-        rep = _recv_exact(sock, 4)
-        if rep[1] != 0:
-            raise ConnectionError("прокси: " + SOCKS_ERR.get(rep[1], f"код {rep[1]}"))
-        atyp = rep[3]
-        if atyp == 1:
-            _recv_exact(sock, 4)
-        elif atyp == 3:
-            _recv_exact(sock, _recv_exact(sock, 1)[0])
-        elif atyp == 4:
-            _recv_exact(sock, 16)
-        _recv_exact(sock, 2)
-        return sock
-    except Exception:
-        sock.close()
-        raise
-
-
-class Resp:
-    """Uniform response over urllib / http.client so callers can use read / headers / geturl."""
-
-    def __init__(self, raw, url):
-        self.raw, self._url, self.headers = raw, url, raw.headers
-        self.status = getattr(raw, "status", None) or getattr(raw, "code", None)
-
-    def read(self, *a):
-        return self.raw.read(*a)
-
-    def geturl(self):
-        return self._url
-
-    def close(self):
-        try:
-            self.raw.close()
-        except OSError:
-            pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        self.close()
-
-
-def _via_socks(url, data, headers, timeout, method, px):
-    u = urllib.parse.urlparse(url)
-    port = u.port or (443 if u.scheme == "https" else 80)
-    sock = socks5_connect(px, u.hostname, port, timeout)
-    if u.scheme == "https":
-        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=u.hostname)
-    conn = http.client.HTTPConnection(u.hostname, port, timeout=timeout)
-    conn.sock = sock
-    path = (u.path or "/") + (("?" + u.query) if u.query else "")
-    conn.request(method or ("POST" if data else "GET"), path, body=data, headers=headers)
-    return conn.getresponse()
-
-
-def net_open(url, data=None, headers=None, timeout=60, proxy=None, method=None, redirects=3):
-    """Open a URL directly or through DeckDrop's own proxy (socks5:// or http://)."""
-    h = {"User-Agent": UA}
-    h.update(headers or {})
-    px = urllib.parse.urlparse(proxy) if proxy else None
-    if px and px.scheme in ("socks5", "socks5h", "socks"):
-        for _ in range(redirects + 1):
-            raw = _via_socks(url, data, h, timeout, method, px)
-            loc = raw.headers.get("Location")
-            if raw.status in (301, 302, 303, 307, 308) and loc:
-                raw.read()
-                raw.close()
-                url = urllib.parse.urljoin(url, loc)
-                continue
-            if raw.status >= 400:
-                raw.read(400)
-                raw.close()
-                raise urllib.error.HTTPError(url, raw.status, raw.reason, raw.headers, None)
-            return Resp(raw, url)
-        raise RuntimeError("слишком много перенаправлений")
-    handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy} if px else {})
-    opener = urllib.request.build_opener(handler)
-    raw = opener.open(urllib.request.Request(url, data=data, headers=h, method=method), timeout=timeout)
-    return Resp(raw, raw.geturl())
-
-
-def http_get(url, timeout=60, headers=None, proxy=None):
-    return net_open(url, headers=headers, timeout=timeout, proxy=proxy)
-
-
-def with_retries(what, fn, tries=3, delay=1.5):
-    """Retry a network call; connection resets from DPI are often intermittent."""
-    last = None
-    for i in range(tries):
-        try:
-            return fn()
-        except urllib.error.HTTPError:
-            raise
-        except (urllib.error.URLError, OSError, ConnectionError, TimeoutError, ssl.SSLError) as e:
-            last = e
-            if i + 1 < tries:
-                time.sleep(delay * (i + 1))
-    raise RuntimeError(f"{what}: {net_reason(last)}") from last
-
-
-
-def resolve_url(url):
-    """Turn share links of known hosts into direct download links (best effort)."""
-    u = urllib.parse.urlparse(url)
-    host = u.netloc.lower()
-    if "disk.yandex" in host or host.endswith("yadi.sk"):
-        api = ("https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="
-               + urllib.parse.quote(url, safe=""))
-        with http_get(api, 30, proxy=dl_proxy()) as r:
-            return json.load(r)["href"]
-    if "drive.google.com" in host or "docs.google.com" in host:
-        m = re.search(r"/d/([\w-]+)", u.path) or re.search(r"[?&]id=([\w-]+)", url)
-        if m:
-            return ("https://drive.usercontent.google.com/download?id="
-                    + m.group(1) + "&export=download&confirm=t")
-    return url
-
-# --------------------------------------------------------------------------- download / upload
-
-def run_download(job, url):
-    part = None
-    try:
-        if job.cancel:
-            raise RuntimeError("отменено")
-        job.status = "resolving"
-        real = resolve_url(url)
-        with http_get(real, proxy=dl_proxy()) as r:
-            ctype = (r.headers.get("Content-Type") or "").lower()
-            if "text/html" in ctype:
-                raise RuntimeError("по ссылке отдаётся HTML-страница, а не файл: нужна прямая "
-                                   "ссылка, или скачай на ПК и перетащи файл сюда")
-            name = filename_from_response(r.headers, r.geturl())
-            job.total = int(r.headers.get("Content-Length") or 0)
-            dest, part = reserve_path(job.root / "_inbox", name)
-            job.work = str(part)
-            job.label = name
-            job.status = "downloading"
-            job.started = time.time()
-            with open(part, "wb") as f:
-                while True:
-                    if job.cancel:
-                        raise RuntimeError("отменено")
-                    chunk = r.read(CHUNK)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    job.done += len(chunk)
-        if job.total and job.done != job.total:
-            raise RuntimeError(f"файл скачан не полностью: {job.done} из {job.total} байт")
-        part.rename(dest)
-        part = None
-        job.file = str(dest)
-        finish(job, dest)
-    except urllib.error.HTTPError as e:
-        drop_part(part)
-        part = None
-        fail(job, f"HTTP {e.code} {e.reason}")
-    except Exception as e:  # noqa: BLE001
-        drop_part(part)
-        part = None
-        fail(job, str(e))
-    finally:
-        drop_part(part)
-
-
-def drop_part(part):
-    """Remove a half-written file. Done before a job is marked failed, never after."""
-    if part is not None:
-        try:
-            Path(part).unlink()
-        except OSError:
-            pass
-
-
-def fail(job, msg):
-    if job.cancel:
-        job.status, job.error = "cancelled", None
-        log(f"job {job.id} cancelled")
-        return
-    job.status = "error"
-    job.error = msg
-    log(f"job {job.id} error: {msg}")
-
-
-def start_download(url, disk=None):
-    url = url.strip()
-    if not re.match(r"^https?://", url, re.I):
-        raise ValueError("нужна ссылка вида http(s)://")
-    link = mega_parse_link(url)         # Mega is encrypted and has its own downloader
-    job = new_job("download", url, root_for(disk) if disk else None)
-    threading.Thread(target=run_mega_download if link else run_download,
-                     args=(job, link or url), daemon=True).start()
-    return job
-
-
-def cancel_job(job_id):
-    """Stop a download. One still waiting in the queue stops on the spot."""
-    with LOCK:
-        job = JOBS.get(job_id)
-    if not job or job.kind != "download" or job.status not in CANCELLABLE:
-        return False
-    job.cancel = True
-    if job.status == "queued":
-        job.status = "cancelled"
-    return True
-
-
-def cancel_all():
-    """Stop every download; the ones that never started leave the list straight away."""
-    with LOCK:
-        jobs = list(JOBS.values())
-    stopped = 0
-    for job in jobs:
-        was = job.status
-        if cancel_job(job.id):
-            stopped += 1
-            if was == "queued":
-                with LOCK:
-                    JOBS.pop(job.id, None)
-    return stopped
-
-# --------------------------------------------------------------------------- AES
 
 # Mega encrypts every file in the browser before uploading it: the link carries the key, the
 # server never sees it. So downloading means decrypting here. The stdlib has no AES, so this is
@@ -993,8 +308,1985 @@ class AesCtr:
             self.close()
         except Exception:                                          # noqa: BLE001
             pass
+'''),
+    'deckdrop.app': (False, 'deckdrop/app.py', r'''"""Entry point: start the server and the background loops."""
 
-# --------------------------------------------------------------------------- mega.nz
+import sys
+import threading
+from http.server import ThreadingHTTPServer
+
+from . import __version__
+from .config import FFMPEG, GAMES_DIR, PORT, STEAM_ROOT, log
+from .service import install, uninstall
+from .state import STATE, ensure_pin, load_state
+from .steam.cdp import CDP
+from .steam.shortcuts import pending_loop
+from .storage import default_root
+from .web.server import Handler, local_urls
+
+
+def main():
+    if "--install" in sys.argv:
+        return install()
+    if "--uninstall" in sys.argv:
+        return uninstall()
+    load_state()
+    if ensure_pin():
+        log(f"new admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
+    (default_root() / "_inbox").mkdir(parents=True, exist_ok=True)
+    CDP.ensure_marker()
+    threading.Thread(target=pending_loop, daemon=True).start()
+    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    srv.daemon_threads = True
+    st = CDP.status()
+    log(f"DeckDrop {__version__} listening on " + " ".join(local_urls())
+        + f"  (games: {GAMES_DIR}, steam: {STEAM_ROOT}, ffmpeg: {'yes' if FFMPEG else 'no'}, "
+        + f"steam control: {'live' if st['available'] else ('after Steam restart' if st['marker'] else 'off')})")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+'''),
+    'deckdrop.archives': (False, 'deckdrop/archives.py', r'''"""Unpacking archives (with passwords) and the archives (inbox) tab."""
+
+import os
+import re
+import shutil
+import subprocess
+import threading
+import zipfile
+from pathlib import Path
+
+from .config import AUTO_EXTRACT, CHUNK, KEEP_ARCHIVE, log
+from .jobs import ACTIVE, JOBS, LOCK, fail, new_job
+from .paths import archive_stem, archive_volume, unique_dir
+from .state import STATE, STATE_LOCK, save_state
+from .storage import disk_label_for, game_roots, inside_any
+
+
+class NeedsPassword(Exception):
+    """Archive is encrypted and the given password (if any) did not work."""
+
+
+PW_ERR = re.compile(r"passphrase|password|encrypt|wrong pass|incorrect pass", re.I)
+
+
+def zip_member_name(info):
+    name = info.filename
+    if not (info.flag_bits & 0x800):
+        # No UTF-8 flag: Python decoded the name as cp437. Russian archives made on
+        # Windows use cp866 (OEM), so re-decode; pure-ASCII names are unaffected.
+        try:
+            name = name.encode("cp437").decode("cp866")
+        except UnicodeError:
+            pass
+    return name
+
+
+def zip_encrypted(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            return any(i.flag_bits & 0x1 for i in z.infolist() if not i.is_dir())
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def extract_zip_python(path, target, password=None):
+    root = target.resolve()
+    pwd = password.encode("utf-8") if password else None
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            name = zip_member_name(info).replace("\\", "/")
+            dest = (root / name).resolve()
+            if root != dest and root not in dest.parents:
+                continue  # zip-slip guard
+            if info.is_dir() or name.endswith("/"):
+                dest.mkdir(parents=True, exist_ok=True)
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with z.open(info, pwd=pwd) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst, CHUNK)
+            except RuntimeError as e:  # "Bad password for file" / "File is encrypted"
+                if "password" in str(e).lower() or "encrypted" in str(e).lower():
+                    raise NeedsPassword("неверный пароль" if password else "архив зашифрован") from e
+                raise
+
+
+def run_tool(cmd):
+    res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if res.returncode != 0:
+        msg = (res.stderr or res.stdout).strip()
+        if PW_ERR.search(msg):
+            raise NeedsPassword("неверный пароль" if any(a.startswith(("-p", "--passphrase")) for a in cmd[1:])
+                                else "архив зашифрован")
+        raise RuntimeError(f"{Path(cmd[0]).name}: {msg[-300:]}")
+
+
+def extract(path, target, password=None):
+    target.mkdir(parents=True, exist_ok=True)
+    low = path.name.lower()
+    if low.endswith(".zip"):
+        if zip_encrypted(path) and not password:
+            raise NeedsPassword("архив зашифрован")
+        try:
+            extract_zip_python(path, target, password)
+            return
+        except NotImplementedError:
+            # AES-encrypted zip: Python can't, bsdtar / 7z can
+            if not password:
+                raise NeedsPassword("архив зашифрован") from None
+    tools = []
+    if shutil.which("bsdtar"):
+        tools.append(["bsdtar"] + (["--passphrase", password] if password else []) + ["-xf", str(path), "-C", str(target)])
+    if shutil.which("7z"):
+        tools.append(["7z", "x", "-y", "-p" + (password or ""), "-o" + str(target), str(path)])
+    if shutil.which("unrar") and low.endswith(".rar"):
+        tools.append(["unrar", "x", "-y", "-p" + (password or "-"), str(path), str(target) + os.sep])
+    if not tools:
+        raise RuntimeError("не найден распаковщик (bsdtar / 7z / unrar)")
+    last = None
+    for cmd in tools:
+        try:
+            run_tool(cmd)
+            return
+        except NeedsPassword:
+            raise
+        except RuntimeError as e:
+            last = e
+    raise last
+
+
+def flatten(d):
+    """archive.zip -> Game/Game/*  becomes  Game/*"""
+    for _ in range(3):
+        entries = [e for e in d.iterdir() if e.name not in ("__MACOSX", ".DS_Store")]
+        if len(entries) == 1 and entries[0].is_dir():
+            tmp = d / (".flatten_" + entries[0].name)
+            entries[0].rename(tmp)
+            for e in tmp.iterdir():
+                shutil.move(str(e), str(d / e.name))
+            tmp.rmdir()
+        else:
+            break
+
+
+def try_extract(path, target, password):
+    """Extract into a fresh dir; on failure remove the partial dir and re-raise."""
+    try:
+        extract(path, target, password)
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+
+def finish(job, path, password=None):
+    """Post-download: unpack archives (with remembered passwords), locate game dir."""
+    try:
+        if not (AUTO_EXTRACT and archive_volume(path.name) == "primary"):
+            job.status = "done"
+            log(f"job {job.id} done: {job.file}")
+            return
+        job.status = "extracting"
+        job.file = str(path)
+        stem = archive_stem(path.name)
+        stem = re.sub(r"\s*\(\d+\)\s*$", "", stem).strip() or stem   # 'Game (1).zip' from a PC re-download
+        target = unique_dir(job.root, stem)
+        candidates = [password] if password else [None] + list(STATE.get("archive_passwords") or [])
+        err = None
+        for cand in candidates:
+            try:
+                try_extract(path, target, cand)
+                err = None
+                break
+            except NeedsPassword as e:
+                err = e
+        if err is not None:
+            job.status = "needs_password"
+            job.error = str(err)
+            return
+        flatten(target)
+        job.game_dir = str(target)
+        if not KEEP_ARCHIVE:
+            path.unlink()
+            job.file = None
+        job.status = "done"
+        log(f"job {job.id} done: {job.game_dir}")
+    except Exception as e:  # noqa: BLE001
+        fail(job, f"ошибка распаковки: {e}")
+
+
+def job_password(job_id, password, remember=False):
+    with LOCK:
+        job = JOBS.get(job_id)
+    if not job or job.status != "needs_password" or not job.file:
+        raise ValueError("это задание не ждёт пароль")
+    if remember and password:
+        with STATE_LOCK:
+            pws = list(STATE.get("archive_passwords") or [])
+            if password not in pws:
+                pws.append(password)
+            STATE["archive_passwords"] = pws
+            save_state()
+    job.status = "extracting"
+    job.error = None
+    threading.Thread(target=finish, args=(job, Path(job.file), password), daemon=True).start()
+    return job
+
+
+def list_archives():
+    out = []
+    for root in game_roots():
+        inbox = root / "_inbox"
+        if not inbox.is_dir():
+            continue
+        label = disk_label_for(root)
+        for f in inbox.iterdir():
+            if not f.is_file() or f.name.endswith(".part"):
+                continue
+            stem, vol = archive_stem(f.name), archive_volume(f.name)
+            game = root / stem
+            st = f.stat()
+            out.append({"name": f.name, "path": str(f), "size": st.st_size, "time": int(st.st_mtime),
+                        "disk": label, "archive": vol == "primary", "part": vol == "secondary",
+                        "extracted": game.is_dir(), "game_dir": str(game) if game.is_dir() else None})
+    out.sort(key=lambda a: a["time"], reverse=True)
+    return out
+
+
+def archive_path(path):
+    p = Path(path).resolve()
+    if not p.is_file() or p.parent.name != "_inbox" or not inside_any(p):
+        raise ValueError("неверный путь")
+    return p
+
+
+def archive_extract_job(path):
+    p = archive_path(path)
+    if archive_volume(p.name) != "primary":
+        raise ValueError("это не архив или не первая его часть")
+    job = new_job("extract", p.name, p.parent.parent)
+    job.file = str(p)
+    threading.Thread(target=finish, args=(job, p), daemon=True).start()
+    return job
+
+
+def archive_delete(path):
+    p = archive_path(path)
+    p.unlink()
+    return p.name
+
+
+def archive_cleanup():
+    removed = []
+    for a in list_archives():
+        if a["extracted"]:
+            Path(a["path"]).unlink()
+            removed.append(a["name"])
+    return removed
+
+
+def _tree_size(p):
+    if p.is_symlink() or not p.is_dir():
+        return p.lstat().st_size
+    return sum(f.lstat().st_size for f in p.rglob("*") if f.is_file() and not f.is_symlink())
+
+
+def inbox_clear(dry_run=False):
+    """Empty every _inbox: archives unpacked or not, loose files, leftovers of stopped downloads.
+
+    Game folders are never touched, and neither is whatever a running job is writing or
+    unpacking at this moment. With dry_run it only counts what would go.
+    """
+    with LOCK:
+        jobs = list(JOBS.values())
+    busy = {Path(p).resolve() for j in jobs if j.status in ACTIVE for p in (j.work, j.file) if p}
+    out = {"removed": 0, "skipped": 0, "freed": 0}
+    for root in game_roots():
+        inbox = root / "_inbox"
+        if not inbox.is_dir():
+            continue
+        for e in list(inbox.iterdir()):
+            try:
+                if e.resolve() in busy:
+                    out["skipped"] += 1
+                    continue
+                size = _tree_size(e)
+                if not dry_run:
+                    if e.is_dir() and not e.is_symlink():
+                        shutil.rmtree(e)
+                    else:
+                        e.unlink()
+                out["removed"] += 1
+                out["freed"] += size
+            except OSError as ex:
+                log(f"inbox clear: {e}: {ex}")
+                out["skipped"] += 1
+    if not dry_run:
+        for j in jobs:                         # a job waiting for a password just lost its archive
+            if j.status == "needs_password" and j.file and not Path(j.file).exists():
+                j.status, j.error = "error", "архив удалён при очистке входящих"
+        log(f"inbox cleared: {out}")
+    return out
+'''),
+    'deckdrop.art': (True, 'deckdrop/art/__init__.py', r'''"""Cover art: image codecs, ffmpeg helpers, VNDB and icon based covers."""
+'''),
+    'deckdrop.art.covers': (False, 'deckdrop/art/covers.py', r'''"""Steam cover art: built from the exe icon or taken from VNDB, applied to a shortcut."""
+
+import json
+import re
+import time
+import urllib.error
+import urllib.parse
+from pathlib import Path
+
+from ..art.ffmpeg import ff_cover, ff_fit_blur, ff_logo, ff_run
+from ..art.images import compose, dominant_color, load_icon, png_encode
+from ..config import FFMPEG, PNG_SIG, VNDB_UA, log
+from ..detect import clean_title, game_exe_path, norm_title, pretty_name
+from ..net import net_open, net_reason, proxy_url, with_retries
+from ..state import STATE, added_rec, update_added
+from ..steam.cdp import CDP
+from ..steam.library import pick_userdata, shortcut_appid, shortcuts_index, userdata_dirs
+from ..steam.shortcuts import resolve_appid
+
+
+# SteamClient.Apps.SetCustomArtworkForApp knows four artwork slots only. There is no type for the
+# shortcut icon: sending one used to land in the landscape slot. The icon goes through SetShortcutIcon.
+ASSET_TYPE = {"portrait": 0, "hero": 1, "logo": 2, "landscape": 3}
+GRID_SUFFIX = {"portrait": "p", "landscape": "", "hero": "_hero", "logo": "_logo", "icon": "_icon"}
+SIZES = {"portrait": (600, 900), "landscape": (920, 430), "hero": (1920, 620)}
+
+
+def capsule_png(icon, cw, ch, frac):
+    iw, ih, rgba = icon
+    bg = dominant_color(iw, ih, rgba)
+    if FFMPEG:
+        tw, th = int(cw * frac), int(ch * frac)
+        fc = (f"color=c=0x{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}:s={cw}x{ch}:d=1[bg];"
+              f"[0:v]scale={tw}:{th}:force_original_aspect_ratio=decrease:flags=lanczos[ic];"
+              f"[bg][ic]overlay=(W-w)/2:(H-h)/2:shortest=1,format=rgb24")
+        try:
+            return ff_run(png_encode(iw, ih, rgba), "png", ["-filter_complex", fc, "-frames:v", "1"], "png")
+        except RuntimeError as e:
+            log(f"ffmpeg capsule failed, falling back: {e}")
+    return png_encode(cw, ch, compose(cw, ch, iw, ih, rgba, bg, frac))
+
+
+def vndb_fetch(url, timeout=40):
+    """Download a VNDB image through DeckDrop's proxy setting, with retries."""
+    def go():
+        with net_open(url, headers={"User-Agent": VNDB_UA}, timeout=timeout, proxy=proxy_url()) as r:
+            return r.read()
+    return with_retries(urllib.parse.urlparse(url).hostname or "VNDB", go)
+
+
+def vndb_query(filters, results=6):
+    body = {"filters": filters, "results": results,
+            "fields": "title, alttitle, released, image.url, image.dims, image.sexual, image.violence, "
+                      "screenshots.url, screenshots.dims, screenshots.sexual, screenshots.violence"}
+    if filters and filters[0] == "search":
+        body["sort"] = "searchrank"
+
+    def go():
+        with net_open("https://api.vndb.org/kana/vn", data=json.dumps(body).encode(),
+                      headers={"Content-Type": "application/json", "User-Agent": VNDB_UA},
+                      timeout=25, proxy=proxy_url(), method="POST") as r:
+            return json.loads(r.read()).get("results") or []
+    return with_retries("api.vndb.org", go)
+
+
+def proxy_test():
+    """Reachability of the VNDB hosts, directly and through the configured proxy."""
+    px = proxy_url()
+    checks = []
+    for host, url in (("api.vndb.org", "https://api.vndb.org/kana/schema"), ("t.vndb.org", "https://t.vndb.org/")):
+        for mode, p in [("напрямую", None)] + ([("через прокси", px)] if px else []):
+            t0 = time.time()
+            try:
+                with net_open(url, headers={"User-Agent": VNDB_UA}, timeout=12, proxy=p) as r:
+                    r.read(200)
+                checks.append({"host": host, "mode": mode, "ok": True, "ms": int((time.time() - t0) * 1000)})
+            except urllib.error.HTTPError as e:      # an HTTP answer still means we got through
+                checks.append({"host": host, "mode": mode, "ok": True, "ms": int((time.time() - t0) * 1000),
+                               "note": f"ответ HTTP {e.code}"})
+            except Exception as e:  # noqa: BLE001
+                checks.append({"host": host, "mode": mode, "ok": False, "error": net_reason(e)})
+    return {"proxy": px or "", "checks": checks}
+
+
+def vndb_search(q):
+    q = re.sub(r"\b(rus|eng|jpn?|ru|en|jp|russian|english|uncensored|patched|repack|final|full|remake|hd|dl|steam)\b", " ", q, flags=re.I)
+    q = re.sub(r"\s+", " ", q).strip()
+    return [{"id": v["id"], "title": v.get("title"), "alttitle": v.get("alttitle"), "released": v.get("released"),
+             "image": (v.get("image") or {}).get("url"), "sexual": (v.get("image") or {}).get("sexual", 0)}
+            for v in vndb_query(["search", "=", q])] if q else []
+
+
+def vndb_pick(name, vn_id=None):
+    """VNDB entry for a game: by id, or by name when the top hit matches the query well enough."""
+    if vn_id:
+        res = vndb_query(["id", "=", vn_id], 1)
+        if not res:
+            raise RuntimeError(f"VNDB: {vn_id} не найден")
+        return res[0]
+    q = re.sub(r"\b(rus|eng|jpn?|ru|en|jp|russian|english|uncensored|patched|repack|final|full|hd)\b", " ", name, flags=re.I)
+    q = re.sub(r"\s+", " ", q).strip()
+    if len(norm_title(q)) < 3:
+        return None
+    nq = norm_title(q)
+    for v in vndb_query(["search", "=", q], 5):
+        for t in (v.get("title") or "", v.get("alttitle") or ""):
+            nt = norm_title(t)
+            if nt and (nt == nq or (len(nq) >= 5 and (nq in nt or nt in nq))):
+                return v
+    return None
+
+
+def vndb_allowed(img):
+    limit = 3.0 if STATE.get("vndb_nsfw") else 1.4
+    return img and img.get("url") and float(img.get("sexual") or 0) <= limit and float(img.get("violence") or 0) <= limit
+
+
+def vndb_images(vn, have_icon):
+    """{slot: (bytes, ext)} from a VNDB entry, honoring the NSFW setting."""
+    imgs, notes = {}, []
+    cover = vn.get("image") or {}
+    shots = [s for s in (vn.get("screenshots") or []) if vndb_allowed(s)]
+    shots.sort(key=lambda s: -(s.get("dims") or [0, 0])[0])
+    cov = None
+    if vndb_allowed(cover):
+        cov = vndb_fetch(cover["url"])
+    elif cover.get("url"):
+        notes.append("обложка VNDB отфильтрована как NSFW")
+    shot = None
+    if shots:
+        shot = vndb_fetch(shots[0]["url"])
+    if FFMPEG:
+        if cov:
+            imgs["portrait"] = (ff_fit_blur(cov, "jpg", 600, 900), "jpg")
+        wide = shot or cov
+        if wide:
+            imgs["landscape"] = (ff_cover(wide, "jpg", 920, 430), "jpg")
+            imgs["hero"] = (ff_cover(wide, "jpg", 1920, 620), "jpg")
+        if cov and not have_icon:
+            imgs["icon"] = (ff_cover(cov, "jpg", 256, 256), "jpg")
+        try:
+            imgs["logo"] = (ff_logo(vn.get("title") or ""), "png")
+        except RuntimeError as e:
+            notes.append(f"логотип: {e}")
+    else:
+        if cov:
+            imgs["portrait"] = (cov, "jpg")
+        if shot:
+            imgs["landscape"] = (shot, "jpg")
+            imgs["hero"] = (shot, "jpg")
+        notes.append("без ffmpeg картинки VNDB поставлены как есть")
+    return imgs, notes
+
+
+def art_userdata(exe):
+    sc = shortcuts_index().get(str(exe))
+    return Path(sc["userdata"]) if sc else pick_userdata()
+
+
+def art_files(appid, ud):
+    """{slot: path} of the cover files currently in userdata/<id>/config/grid (newest per slot)."""
+    grid = ud / "config" / "grid"
+    out = {}
+    if not grid.is_dir():
+        return out
+    for slot, suf in GRID_SUFFIX.items():
+        cands = [f for f in grid.glob(f"{appid}{suf}.*") if f.suffix.lower() in (".png", ".jpg", ".jpeg")]
+        if cands:
+            out[slot] = max(cands, key=lambda f: f.stat().st_mtime)
+    return out
+
+
+def art_file_for(appid, slot):
+    for ud in userdata_dirs():
+        f = art_files(appid, ud).get(slot)
+        if f:
+            return f
+    return None
+
+
+def apply_artwork(appid, ud, images):
+    """Write covers into userdata/<id>/config/grid (what Steam reads on start / what the UI previews)
+    and, when Steam control is live, push them to the running client as well."""
+    ud = ud or pick_userdata()
+    grid = ud / "config" / "grid"
+    grid.mkdir(parents=True, exist_ok=True)
+    for slot, (data, ext) in images.items():
+        for old in grid.glob(f"{appid}{GRID_SUFFIX[slot]}.*"):
+            if old.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                old.unlink()
+        (grid / f"{appid}{GRID_SUFFIX[slot]}.{ext}").write_bytes(data)
+    if not CDP.available():
+        return "files"
+    for slot, (data, ext) in images.items():
+        if slot in ASSET_TYPE:
+            CDP.set_artwork(appid, data, ext, ASSET_TYPE[slot])
+    if "icon" in images:
+        try:
+            CDP.set_icon(appid, grid / f"{appid}_icon.{images['icon'][1]}")
+        except Exception as e:  # noqa: BLE001
+            log(f"set icon: {e}")
+    return "live"
+
+
+def art_current(game_dir, exe):
+    """Cover slots of an added game with URLs for preview."""
+    p = game_exe_path(game_dir, exe)
+    appid = resolve_appid(p)
+    if not appid:
+        raise ValueError("игра ещё не добавлена в Steam")
+    files = art_files(appid, art_userdata(p))
+    rec = added_rec(str(p))
+    slots = {}
+    for slot in GRID_SUFFIX:
+        f = files.get(slot)
+        # nanosecond mtime: two replacements in the same second must still bust the browser cache
+        slots[slot] = ({"url": f"/art/{appid}/{slot}?v={f.stat().st_mtime_ns}", "size": f.stat().st_size,
+                        "ext": f.suffix.lstrip(".").lower()} if f else None)
+    return {"appid": appid, "source": rec.get("art_source"), "vndb_title": rec.get("vndb_title"),
+            "note": rec.get("art_note"), "error": rec.get("art_error"), "live": CDP.available(), "slots": slots}
+
+
+def vndb_image_list(vn_id):
+    """Cover + screenshots of one VN, for picking a single slot image by hand."""
+    res = vndb_query(["id", "=", vn_id], 1)
+    if not res:
+        raise RuntimeError(f"VNDB: {vn_id} не найден")
+    v = res[0]
+    out = []
+    cover = v.get("image") or {}
+    if vndb_allowed(cover):
+        out.append({"kind": "cover", "url": cover["url"], "dims": cover.get("dims")})
+    for shot in v.get("screenshots") or []:
+        if vndb_allowed(shot):
+            out.append({"kind": "screenshot", "url": shot["url"], "dims": shot.get("dims")})
+    return {"id": v["id"], "title": v.get("title"), "images": out}
+
+
+def art_from_url(game_dir, exe, slot, url, vn_id=None):
+    """Put one VNDB image into one cover slot, fitted/cropped for that slot when ffmpeg is around."""
+    if slot not in GRID_SUFFIX:
+        raise ValueError("неизвестный слот обложки")
+    u = urllib.parse.urlparse(url)
+    if u.scheme != "https" or not (u.netloc == "vndb.org" or u.netloc.endswith(".vndb.org")):
+        raise ValueError("картинки можно брать только с vndb.org")
+    p = game_exe_path(game_dir, exe)
+    appid = resolve_appid(p)
+    if not appid:
+        raise ValueError("игра ещё не добавлена в Steam")
+    data = vndb_fetch(url)
+    ext = "png" if data[:8] == PNG_SIG else "jpg"
+    if FFMPEG:
+        try:
+            if slot == "portrait":
+                data, ext = ff_fit_blur(data, ext, 600, 900), "jpg"
+            elif slot == "landscape":
+                data, ext = ff_cover(data, ext, 920, 430), "jpg"
+            elif slot == "hero":
+                data, ext = ff_cover(data, ext, 1920, 620), "jpg"
+            elif slot == "icon":
+                data, ext = ff_cover(data, ext, 256, 256), "jpg"
+        except RuntimeError as e:
+            log(f"ffmpeg for {slot} failed, using the image as is: {e}")
+    how = apply_artwork(appid, art_userdata(p), {slot: (data, ext)})
+    kv = {"art": True, "art_error": None, "art_source": "vndb"}
+    if vn_id:
+        kv["vndb_id"] = vn_id
+    update_added(str(p), **kv)
+    return {"slot": slot, "how": how}
+
+
+def art_from_exe(game_dir, exe, slot):
+    """Fill one cover slot from the icon inside the executable (or an .ico next to it)."""
+    if slot not in GRID_SUFFIX:
+        raise ValueError("неизвестный слот обложки")
+    p = game_exe_path(game_dir, exe)
+    appid = resolve_appid(p)
+    if not appid:
+        raise ValueError("игра ещё не добавлена в Steam")
+    icon = load_icon(p)
+    if not icon:
+        raise RuntimeError(f"в {p.name} нет иконки, и рядом не нашлось .ico или icon.png")
+    if slot in SIZES:
+        w, h = SIZES[slot]
+        data = capsule_png(icon, w, h, 0.6 if slot == "portrait" else 0.5)
+    else:                      # icon and logo keep the transparent original
+        data = png_encode(*icon)
+    how = apply_artwork(appid, art_userdata(p), {slot: (data, "png")})
+    update_added(str(p), art=True, art_error=None)
+    return {"slot": slot, "how": how, "size": f"{icon[0]}x{icon[1]}"}
+
+
+def custom_art(game_dir, exe, slot, data):
+    """Replace one cover slot with an image uploaded by the user (PNG or JPEG)."""
+    if slot not in GRID_SUFFIX:
+        raise ValueError("неизвестный слот обложки")
+    if data[:8] == PNG_SIG:
+        ext = "png"
+    elif data[:3] == b"\xff\xd8\xff":
+        ext = "jpg"
+    else:
+        raise ValueError("нужен PNG или JPEG")
+    if len(data) > 25 << 20:
+        raise ValueError("файл больше 25 МБ")
+    p = game_exe_path(game_dir, exe)
+    appid = resolve_appid(p)
+    if not appid:
+        raise ValueError("игра ещё не добавлена в Steam")
+    how = apply_artwork(appid, art_userdata(p), {slot: (data, ext)})
+    update_added(str(p), art=True, art_error=None, art_source="custom")
+    return {"slot": slot, "how": how}
+
+
+ART_BUSY = set()
+
+
+def art_worker(exe, force, wait_for_shortcut, source="auto", vn_id=None):
+    if exe in ART_BUSY:
+        return
+    ART_BUSY.add(exe)
+    try:
+        note = ensure_art(exe, force, wait_for_shortcut, source, vn_id)
+        log(f"art for {Path(exe).name}: {note}")
+    except Exception as e:  # noqa: BLE001
+        log(f"art for {Path(exe).name} failed: {e}")
+        update_added(exe, art=False, art_error=str(e))
+    finally:
+        ART_BUSY.discard(exe)
+
+
+def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=None):
+    """Build and apply the full cover set (portrait, landscape, hero, logo, icon) for a shortcut."""
+    p = Path(exe)
+    rec = added_rec(str(p))
+    if rec.get("art") and not force and source == "auto":
+        return "обложка уже есть"
+    appid = resolve_appid(p, wait=20 if wait_for_shortcut else 0)
+    sc = shortcuts_index().get(str(p))
+    ud = Path(sc["userdata"]) if sc else None
+    if not appid:
+        appid = shortcut_appid(f'"{p}"', p.stem)
+        log(f"shortcut for {p.name} not in shortcuts.vdf yet; using computed appid {appid}")
+    images, info, notes = {}, {"art_source": "icon", "vndb_id": None, "vndb_title": None}, []
+    icon = load_icon(p)
+    if source == "vndb" or (source == "auto" and STATE.get("vndb_auto", True)):
+        try:
+            query = rec.get("name") or (clean_title(sc["name"]) if sc and sc.get("name") else "") or pretty_name(p, p.parent)
+            vn = vndb_pick(clean_title(query) or query, vn_id)
+            if vn:
+                vimgs, vnotes = vndb_images(vn, bool(icon))
+                notes += vnotes
+                if vimgs:
+                    images.update(vimgs)
+                    info = {"art_source": "vndb", "vndb_id": vn["id"], "vndb_title": vn.get("title")}
+            else:
+                notes.append("VNDB: подходящей новеллы не нашёл")
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"VNDB: {str(e)[:120]}")
+            log(f"vndb for {p.name}: {e}")
+    if icon:
+        if "icon" not in images:
+            images["icon"] = (png_encode(*icon), "png")
+        for slot, (w, h) in SIZES.items():
+            if slot not in images:
+                images[slot] = (capsule_png(icon, w, h, 0.6 if slot == "portrait" else 0.5), "png")
+    if not images:
+        raise RuntimeError("иконка не найдена ни в exe, ни в папке игры, и VNDB не помог")
+    how = apply_artwork(appid, ud, images)
+    update_added(str(p), art=True, appid=appid, art_error=None, art_note="; ".join(notes) or None, **info)
+    return f"{info['art_source']} -> {', '.join(sorted(images))} ({how})" + (f"; {'; '.join(notes)}" if notes else "")
+'''),
+    'deckdrop.art.ffmpeg': (False, 'deckdrop/art/ffmpeg.py', r'''"""ffmpeg helpers (optional, better quality covers and logos)."""
+
+import os
+import re
+import secrets
+import subprocess
+from pathlib import Path
+
+from ..config import CACHE_DIR, FFMPEG
+
+
+def ff_run(inp, in_ext, args, out_ext, timeout=120):
+    """Run ffmpeg on bytes -> bytes (via temp files). Raises RuntimeError on failure."""
+    if not FFMPEG:
+        raise RuntimeError("ffmpeg не найден")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tag = secrets.token_hex(4)
+    src = CACHE_DIR / f"ff_{tag}_in.{in_ext}"
+    dst = CACHE_DIR / f"ff_{tag}_out.{out_ext}"
+    try:
+        src.write_bytes(inp)
+        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", str(src)] + args + [str(dst)],
+                             capture_output=True, text=True, errors="replace", timeout=timeout)
+        if res.returncode != 0 or not dst.is_file():
+            raise RuntimeError("ffmpeg: " + res.stderr.strip()[-300:])
+        return dst.read_bytes()
+    finally:
+        for f in (src, dst):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def ff_cover(inp, in_ext, w, h):
+    """Scale-to-fill and centre-crop to exactly w x h (jpg)."""
+    return ff_run(inp, in_ext, ["-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+                                "-frames:v", "1", "-q:v", "3"], "jpg")
+
+
+def ff_fit_blur(inp, in_ext, w, h):
+    """Fit inside w x h over a blurred, filled copy of itself (jpg)."""
+    vf = (f"split[a][b];[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=20:2[bg];"
+          f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
+    return ff_run(inp, in_ext, ["-vf", vf, "-frames:v", "1", "-q:v", "3"], "jpg")
+
+
+def find_font(text=""):
+    cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", text))
+    dirs = [Path("/usr/share/fonts"), Path.home() / ".local/share/fonts", Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"]
+    prefs = (["NotoSansCJK-Bold.ttc", "NotoSansCJKjp-Bold.otf", "NotoSansCJK-Regular.ttc"] if cjk else []) + \
+            ["DejaVuSans-Bold.ttf", "NotoSans-Bold.ttf", "LiberationSans-Bold.ttf", "arialbd.ttf", "segoeuib.ttf"]
+    found = {}
+    for d in dirs:
+        if d.is_dir():
+            for f in d.rglob("*"):
+                if f.suffix.lower() in (".ttf", ".otf", ".ttc") and f.name not in found:
+                    found[f.name] = f
+    for name in prefs:
+        if name in found:
+            return found[name]
+    return next(iter(found.values()), None)
+
+
+def ff_logo(title):
+    """Transparent PNG with the title as text (Steam 'logo' asset)."""
+    font = find_font(title)
+    if not font:
+        raise RuntimeError("шрифт не найден")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tag = secrets.token_hex(4)
+    txt = CACHE_DIR / f"logo_{tag}.txt"
+    out = CACHE_DIR / f"logo_{tag}.png"
+    size = max(48, min(120, int(1700 / max(len(title), 1))))
+    fontfile = str(font).replace("\\", "/").replace(":", "\\:")
+    try:
+        txt.write_text(title, "utf-8")
+        vf = (f"drawtext=fontfile='{fontfile}':textfile='{str(txt).replace(chr(92), '/').replace(':', chr(92) + ':')}'"
+              f":fontsize={size}:fontcolor=white:borderw=4:bordercolor=black@0.55:x=(w-text_w)/2:y=(h-text_h)/2")
+        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black@0.0:s=1280x400,format=rgba",
+                              "-vf", vf, "-frames:v", "1", str(out)], capture_output=True, text=True, errors="replace", timeout=60)
+        if res.returncode != 0 or not out.is_file():
+            raise RuntimeError("ffmpeg drawtext: " + res.stderr.strip()[-200:])
+        return out.read_bytes()
+    finally:
+        for f in (txt, out):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+'''),
+    'deckdrop.art.images': (False, 'deckdrop/art/images.py', r'''"""Images without dependencies: PE icons, ICO, PNG, DIB, simple compositing."""
+
+import mmap
+import struct
+import zlib
+from pathlib import Path
+
+from ..config import PNG_SIG, log
+
+
+def pe_icon(path):
+    """Best icon image (raw PNG or DIB bytes) from a PE executable, or None."""
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            return _pe_icon(m)
+    except (OSError, ValueError, struct.error, IndexError, KeyError):
+        return None
+
+
+def _pe_icon(m):
+    if m[:2] != b"MZ":
+        return None
+    pe = struct.unpack_from("<I", m, 0x3C)[0]
+    if m[pe:pe + 4] != b"PE\0\0":
+        return None
+    nsec = struct.unpack_from("<H", m, pe + 6)[0]
+    opt_size = struct.unpack_from("<H", m, pe + 20)[0]
+    opt = pe + 24
+    magic = struct.unpack_from("<H", m, opt)[0]
+    dd = opt + (96 if magic == 0x10B else 112)
+    rsrc_rva = struct.unpack_from("<I", m, dd + 2 * 8)[0]
+    if not rsrc_rva:
+        return None
+    sections = []
+    sec = opt + opt_size
+    for i in range(nsec):
+        vsize, va, rawsize, rawptr = struct.unpack_from("<IIII", m, sec + i * 40 + 8)
+        sections.append((va, max(vsize, rawsize), rawptr))
+
+    def off(rva):
+        for va, size, ptr in sections:
+            if va <= rva < va + size:
+                return rva - va + ptr
+        raise ValueError("rva outside sections")
+
+    base = off(rsrc_rva)
+
+    def entries(dir_off):
+        n_named, n_id = struct.unpack_from("<HH", m, dir_off + 12)
+        return [struct.unpack_from("<II", m, dir_off + 16 + i * 8) for i in range(n_named + n_id)]
+
+    def leaf(e):
+        while e & 0x80000000:
+            subs = entries(base + (e & 0x7FFFFFFF))
+            if not subs:
+                raise ValueError("empty resource dir")
+            e = subs[0][1]
+        rva, size = struct.unpack_from("<II", m, base + e)
+        o = off(rva)
+        return bytes(m[o:o + size])
+
+    types = dict(entries(base))
+    if 14 not in types or 3 not in types:
+        return None
+    icons = dict(entries(base + (types[3] & 0x7FFFFFFF)))
+    groups = entries(base + (types[14] & 0x7FFFFFFF))
+    if not groups:
+        return None
+    grp = leaf(groups[0][1])
+    count = struct.unpack_from("<H", grp, 4)[0]
+    best = None
+    for i in range(count):
+        w, _h, _cc, _res, _planes, bpp, _size, ident = struct.unpack_from("<BBBBHHIH", grp, 6 + i * 14)
+        if ident not in icons:
+            continue
+        score = ((w or 256), bpp)
+        if best is None or score > best[0]:
+            best = (score, icons[ident])
+    return leaf(best[1]) if best else None
+
+
+def ico_best(data):
+    """Best image (raw PNG or DIB bytes) from an .ico file."""
+    count = struct.unpack_from("<H", data, 4)[0]
+    best = None
+    for i in range(count):
+        w, _h, _cc, _res, _planes, bpp, size, offset = struct.unpack_from("<BBBBHHII", data, 6 + i * 16)
+        score = ((w or 256), bpp)
+        if best is None or score > best[0]:
+            best = (score, data[offset:offset + size])
+    return best[1] if best else None
+
+
+def _paeth(a, b, c):
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    return a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+
+
+def png_decode(data):
+    """Minimal PNG decoder (8-bit, non-interlaced) -> (w, h, rgba bytes)."""
+    if data[:8] != PNG_SIG:
+        raise ValueError("not a png")
+    pos, idat, plte, trns = 8, [], b"", b""
+    w = h = ct = bd = il = 0
+    while pos + 8 <= len(data):
+        ln, typ = struct.unpack_from(">I4s", data, pos)
+        body = data[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+        if typ == b"IHDR":
+            w, h, bd, ct, _, _, il = struct.unpack(">IIBBBBB", body)
+        elif typ == b"PLTE":
+            plte = body
+        elif typ == b"tRNS":
+            trns = body
+        elif typ == b"IDAT":
+            idat.append(body)
+        elif typ == b"IEND":
+            break
+    if bd != 8 or il or ct not in (0, 2, 3, 4, 6):
+        raise ValueError("unsupported png")
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ct]
+    raw = zlib.decompress(b"".join(idat))
+    stride = w * ch
+    prev = bytearray(stride)
+    out = bytearray()
+    pos = 0
+    for _ in range(h):
+        f = raw[pos]
+        line = bytearray(raw[pos + 1:pos + 1 + stride])
+        pos += 1 + stride
+        if f == 1:
+            for x in range(ch, stride):
+                line[x] = (line[x] + line[x - ch]) & 0xFF
+        elif f == 2:
+            for x in range(stride):
+                line[x] = (line[x] + prev[x]) & 0xFF
+        elif f == 3:
+            for x in range(stride):
+                line[x] = (line[x] + (((line[x - ch] if x >= ch else 0) + prev[x]) >> 1)) & 0xFF
+        elif f == 4:
+            for x in range(stride):
+                a = line[x - ch] if x >= ch else 0
+                c = prev[x - ch] if x >= ch else 0
+                line[x] = (line[x] + _paeth(a, prev[x], c)) & 0xFF
+        out += line
+        prev = line
+    if ct == 6:
+        return w, h, bytes(out)
+    px = bytearray(w * h * 4)
+    for i in range(w * h):
+        o = i * 4
+        if ct == 2:
+            px[o:o + 3] = out[i * 3:i * 3 + 3]
+            px[o + 3] = 255
+        elif ct == 0:
+            px[o] = px[o + 1] = px[o + 2] = out[i]
+            px[o + 3] = 255
+        elif ct == 4:
+            px[o] = px[o + 1] = px[o + 2] = out[i * 2]
+            px[o + 3] = out[i * 2 + 1]
+        else:
+            idx = out[i]
+            px[o:o + 3] = plte[idx * 3:idx * 3 + 3]
+            px[o + 3] = trns[idx] if idx < len(trns) else 255
+    return w, h, bytes(px)
+
+
+def png_encode(w, h, rgba):
+    raw = b"".join(b"\0" + rgba[y * w * 4:(y + 1) * w * 4] for y in range(h))
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+    return (PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def dib_decode(data):
+    """Icon DIB (BITMAPINFOHEADER + XOR bitmap + AND mask) -> (w, h, rgba)."""
+    size, w, h2, _planes, bpp, comp = struct.unpack_from("<IiiHHI", data, 0)
+    if comp != 0 or bpp not in (1, 4, 8, 24, 32):
+        raise ValueError(f"unsupported dib (bpp={bpp}, comp={comp})")
+    h = abs(h2)
+    if h == 2 * w:      # icon DIBs store XOR+AND bitmaps stacked, so height is doubled
+        h //= 2
+    off = size
+    palette = []
+    if bpp <= 8:
+        n = 1 << bpp
+        palette = [data[off + i * 4:off + i * 4 + 4] for i in range(n)]
+        off += n * 4
+    row = ((w * bpp + 31) // 32) * 4
+    mask_row = ((w + 31) // 32) * 4
+    xor_off, and_off = off, off + row * h
+    has_mask = and_off + mask_row * h <= len(data)
+    use_alpha = False
+    if bpp == 32:
+        use_alpha = any(data[xor_off + i * 4 + 3] for i in range(w * h))
+    px = bytearray(w * h * 4)
+    for y in range(h):
+        sr = xor_off + (h - 1 - y) * row
+        mr = and_off + (h - 1 - y) * mask_row
+        for x in range(w):
+            a = 255
+            if bpp == 32:
+                b, g, r, a32 = data[sr + x * 4:sr + x * 4 + 4]
+                if use_alpha:
+                    a = a32
+            elif bpp == 24:
+                b, g, r = data[sr + x * 3:sr + x * 3 + 3]
+            else:
+                if bpp == 8:
+                    idx = data[sr + x]
+                elif bpp == 4:
+                    idx = (data[sr + x // 2] >> (4 if x % 2 == 0 else 0)) & 15
+                else:
+                    idx = (data[sr + x // 8] >> (7 - x % 8)) & 1
+                b, g, r = palette[idx][:3]
+            if not use_alpha and has_mask:
+                a = 0 if (data[mr + x // 8] >> (7 - x % 8)) & 1 else 255
+            o = (y * w + x) * 4
+            px[o], px[o + 1], px[o + 2], px[o + 3] = r, g, b, a
+    return w, h, bytes(px)
+
+
+def decode_icon_image(data):
+    return png_decode(data) if data[:8] == PNG_SIG else dib_decode(data)
+
+
+def find_icon_file(game_dir):
+    """Fallback for games without an exe icon: an .ico / icon png in the game folder."""
+    pats = ("*.ico", "*/*.ico", "icon.png", "*/icon.png", "*/window_icon.png", "*/*/window_icon.png", "*icon*.png")
+    for pat in pats:
+        for p in sorted(Path(game_dir).glob(pat)):
+            try:
+                data = p.read_bytes()
+                return decode_icon_image(ico_best(data) if p.suffix.lower() == ".ico" else data)
+            except (ValueError, struct.error, zlib.error, IndexError):
+                continue
+    return None
+
+
+def load_icon(exe_path):
+    p = Path(exe_path)
+    if p.suffix.lower() == ".exe":
+        raw = pe_icon(p)
+        if raw:
+            try:
+                return decode_icon_image(raw)
+            except (ValueError, struct.error, zlib.error, IndexError) as e:
+                log(f"icon decode failed for {p.name}: {e}")
+    return find_icon_file(p.parent)
+
+
+def dominant_color(w, h, rgba):
+    r = g = b = n = 0
+    for i in range(0, w * h * 4, 4 * max(1, (w * h) // 4096)):
+        if rgba[i + 3] > 128:
+            r += rgba[i]
+            g += rgba[i + 1]
+            b += rgba[i + 2]
+            n += 1
+    if not n:
+        return (0x1B, 0x28, 0x38)
+    return tuple(int(c / n * 0.35) for c in (r, g, b))
+
+
+def compose(cw, ch, iw, ih, rgba, bg, frac):
+    """Nearest-neighbour scale the icon to `frac` of the canvas and centre it on a solid bg."""
+    scale = min(cw * frac / iw, ch * frac / ih)
+    tw, th = max(1, int(iw * scale)), max(1, int(ih * scale))
+    xs = [min(iw - 1, int(x / scale)) * 4 for x in range(tw)]
+    ys = [min(ih - 1, int(y / scale)) for y in range(th)]
+    ox, oy = (cw - tw) // 2, (ch - th) // 2
+    bgpx = bytes(bg) + b"\xff"
+    canvas = bytearray(bgpx * (cw * ch))
+    for ty in range(th):
+        srow = rgba[ys[ty] * iw * 4:(ys[ty] + 1) * iw * 4]
+        row = bytearray(tw * 4)
+        for tx in range(tw):
+            sx = xs[tx]
+            a = srow[sx + 3]
+            o = tx * 4
+            if a == 255:
+                row[o:o + 4] = srow[sx:sx + 4]
+            elif a == 0:
+                row[o:o + 4] = bgpx
+            else:
+                ia = 255 - a
+                row[o] = (srow[sx] * a + bg[0] * ia) // 255
+                row[o + 1] = (srow[sx + 1] * a + bg[1] * ia) // 255
+                row[o + 2] = (srow[sx + 2] * a + bg[2] * ia) // 255
+                row[o + 3] = 255
+        start = ((oy + ty) * cw + ox) * 4
+        canvas[start:start + tw * 4] = row
+    return bytes(canvas)
+'''),
+    'deckdrop.bundle': (False, 'deckdrop/bundle.py', r'''"""Where this copy runs from: the single-file build or the source tree.
+
+The build (tools/build.py) sets PATH and FILES from its bootstrap before anything
+else is imported; from the source tree both stay None.
+"""
+from pathlib import Path
+
+PATH = None    # the built deckdrop.py this copy runs from; None when run from src/
+FILES = None   # data files embedded in the build: {"web/app.js": text, ...}
+
+
+def resource(rel):
+    """Text of a data file shipped with the package, e.g. "web/app.js"."""
+    if FILES is not None:
+        return FILES[rel]
+    return (Path(__file__).parent / rel).read_text("utf-8")
+'''),
+    'deckdrop.config': (False, 'deckdrop/config.py', r'''"""Settings from the environment, fixed paths and constants, logging."""
+
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+from . import __version__
+
+
+PORT = int(os.environ.get("DECKDROP_PORT", "8088"))
+CEF_PORT = int(os.environ.get("DECKDROP_CEF_PORT", "8080"))
+CEF_ENABLED = os.environ.get("DECKDROP_CEF", "1") != "0"
+GAMES_DIR = Path(os.environ.get("DECKDROP_GAMES", str(Path.home() / "Games")))
+STATE_FILE = Path(os.environ.get("DECKDROP_STATE", str(Path.home() / ".config" / "deckdrop" / "state.json")))
+CACHE_DIR = Path.home() / ".cache" / "deckdrop"
+AUTO_EXTRACT = os.environ.get("DECKDROP_EXTRACT", "1") != "0"
+KEEP_ARCHIVE = os.environ.get("DECKDROP_KEEP", "1") != "0"
+UPDATE_URL_DEFAULT = os.environ.get("DECKDROP_UPDATE_URL",
+                                    "https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py")
+# where versions up to 0.3.23 updated from; a remembered copy of it is moved to the release link
+UPDATE_URL_LEGACY = ("https://raw.githubusercontent.com/aniforka/deckdrop/main/deckdrop.py",)
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+VNDB_UA = f"DeckDrop/{__version__} (Steam Deck cover art)"
+ARCHIVE_EXTS = (".zip", ".7z", ".rar", ".tar", ".tgz", ".txz", ".tbz2",
+                ".tar.gz", ".tar.xz", ".tar.bz2")
+# executables that are almost never the game itself
+SKIP_EXE = re.compile(r"unins|vc_?redist|dxsetup|dxwebsetup|crashhandler|"
+                      r"^python|notification_helper|^setup_?vc|^unitycrash", re.I)
+LINUX_EXTS = (".sh", ".x86_64", ".x86")
+CHUNK = 1 << 20
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v"}
+MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
+        ".webp": "image/webp", ".mp4": "video/mp4", ".m4v": "video/mp4", ".mkv": "video/x-matroska",
+        ".webm": "video/webm", ".mov": "video/quicktime", ".svg": "image/svg+xml",
+        ".zip": "application/zip"}
+FFMPEG = shutil.which("ffmpeg")
+
+
+def _steam_root():
+    env = os.environ.get("DECKDROP_STEAM")
+    if env:
+        return Path(env)
+    for cand in (Path.home() / ".local/share/Steam", Path.home() / ".steam/steam", Path.home() / ".steam/root"):
+        if (cand / "userdata").is_dir():
+            return cand
+    return Path.home() / ".local/share/Steam"
+
+
+STEAM_ROOT = _steam_root()
+MEDIA_DIRS = [Path.home() / "Videos", Path.home() / "Pictures"]
+
+
+def log(msg):
+    sys.stderr.write(time.strftime("%H:%M:%S ") + msg + "\n")
+    sys.stderr.flush()
+'''),
+    'deckdrop.detect': (False, 'deckdrop/detect.py', r'''"""What a game folder holds: executables and a human name for the game."""
+
+import re
+from pathlib import Path
+
+from .config import LINUX_EXTS, SKIP_EXE
+from .state import STATE
+from .storage import inside_any
+
+
+GENERIC_STEMS = {"game", "start", "launcher", "play", "run", "main", "app", "launch", "bin", "engine",
+                 "client", "nscript", "nscr", "kirikiri", "krkr", "krkrz", "siglus", "siglusengine",
+                 "bgi", "cmvs32", "cmvs64", "yuris", "advhd", "malie", "rugp", "system", "ayame",
+                 "game-32", "game-64", "exe", "win", "windows", "x64", "x86"}
+NAME_EXT_RE = re.compile(r"\.(exe|sh|x86_64|x86)$", re.I)
+
+
+def strip_exe_ext(name):
+    return NAME_EXT_RE.sub("", (name or "").strip()).strip()
+
+
+def is_generic_stem(stem):
+    return (stem.lower() in GENERIC_STEMS or len(stem) < 3
+            or bool(re.fullmatch(r"(game|start|launcher|play)[-_ ]?\d*", stem, re.I)))
+
+
+def clean_title(raw):
+    """Library-name cleanup: no extension, no (1)/[RUS]/(2019) tags, no version numbers,
+    underscores -> spaces, first letter capitalised."""
+    base = strip_exe_ext(raw)
+    base = re.sub(r"[\[\(].*?[\]\)]", " ", base)
+    base = re.sub(r"(?<![A-Za-z0-9])[vV]\.?\d+(\.\d+)*[a-z]?(?![A-Za-z0-9])", " ", base)
+    base = re.sub(r"[_]+", " ", base)
+    base = re.sub(r"\s+", " ", base).strip(" -_.")
+    return base[:1].upper() + base[1:] if base else ""
+
+
+def pretty_name(exe, game_dir):
+    """Library name: the exe stem when it says something, else the folder name; both cleaned."""
+    stem = Path(exe).stem
+    return clean_title(Path(game_dir).name if is_generic_stem(stem) else stem) or clean_title(stem) or stem
+
+
+def name_candidates(game_dir, rels, steam_names=()):
+    """Possible library names, best first: existing Steam names, exe stems (recommended exe first), folder name."""
+    out = []
+
+    def add(n):
+        if n and n.lower() not in {o.lower() for o in out}:
+            out.append(n)
+
+    for n in steam_names:
+        add(clean_title(n) or strip_exe_ext(n))
+    rec = recommend(rels) if rels else None
+    for r in ([rec] if rec else []) + [r for r in rels if r != rec]:
+        stem = Path(r).stem
+        if not is_generic_stem(stem):
+            add(clean_title(stem))
+    add(clean_title(Path(game_dir).name))
+    return out
+
+
+def is_linux_exe(path):
+    return str(path).lower().endswith(LINUX_EXTS)
+
+
+def game_exe_path(game_dir, exe):
+    p = (Path(game_dir) / exe).resolve()
+    if not inside_any(p) or not p.is_file():
+        raise ValueError("неверный путь")
+    return p
+
+
+def norm_title(s):
+    return re.sub(r"[^a-z0-9а-яё]+", "", s.lower())
+
+
+def find_exes(d):
+    exes = []
+    for pattern in ("*.exe", "*/*.exe", "*.sh", "*/*.sh", "*.x86_64", "*/*.x86_64"):
+        for p in d.glob(pattern):
+            if not SKIP_EXE.search(p.name):
+                exes.append(p.relative_to(d).as_posix())
+    return sorted(set(exes))[:25]
+
+
+def recommend(exes):
+    linux = [e for e in exes if is_linux_exe(e)]
+    win = [e for e in exes if not is_linux_exe(e)]
+    pool = (linux or win) if STATE.get("prefer_linux", True) else (win or linux)
+    return min(pool, key=lambda e: (e.count("/"), len(e))) if pool else None
+'''),
+    'deckdrop.downloads': (False, 'deckdrop/downloads.py', r'''"""Downloads by link: plain HTTP and Mega, queueing and cancelling."""
+
+import re
+import threading
+import time
+import urllib.error
+
+from .archives import finish
+from .config import CHUNK
+from .jobs import CANCELLABLE, JOBS, LOCK, drop_part, fail, new_job
+from .mega import mega_folder_files, mega_parse_link, run_mega_download, run_mega_folder
+from .net import dl_proxy, http_get, resolve_url
+from .paths import filename_from_response, reserve_path, safe_name
+from .storage import root_for
+
+
+def run_download(job, url):
+    part = None
+    try:
+        if job.cancel:
+            raise RuntimeError("отменено")
+        job.status = "resolving"
+        real = resolve_url(url)
+        with http_get(real, proxy=dl_proxy()) as r:
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if "text/html" in ctype:
+                raise RuntimeError("по ссылке отдаётся HTML-страница, а не файл: нужна прямая "
+                                   "ссылка, или скачай на ПК и перетащи файл сюда")
+            name = filename_from_response(r.headers, r.geturl())
+            job.total = int(r.headers.get("Content-Length") or 0)
+            dest, part = reserve_path(job.root / "_inbox", name)
+            job.work = str(part)
+            job.label = name
+            job.status = "downloading"
+            job.started = time.time()
+            with open(part, "wb") as f:
+                while True:
+                    if job.cancel:
+                        raise RuntimeError("отменено")
+                    chunk = r.read(CHUNK)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    job.done += len(chunk)
+        if job.total and job.done != job.total:
+            raise RuntimeError(f"файл скачан не полностью: {job.done} из {job.total} байт")
+        part.rename(dest)
+        part = None
+        job.file = str(dest)
+        finish(job, dest)
+    except urllib.error.HTTPError as e:
+        drop_part(part)
+        part = None
+        fail(job, f"HTTP {e.code} {e.reason}")
+    except Exception as e:  # noqa: BLE001
+        drop_part(part)
+        part = None
+        fail(job, str(e))
+    finally:
+        drop_part(part)
+
+
+def start_download(url, disk=None):
+    url = url.strip()
+    if not re.match(r"^https?://", url, re.I):
+        raise ValueError("нужна ссылка вида http(s)://")
+    link = mega_parse_link(url)         # Mega is encrypted and has its own downloader
+    job = new_job("download", url, root_for(disk) if disk else None)
+    threading.Thread(target=run_mega_download if link else run_download,
+                     args=(job, link or url), daemon=True).start()
+    return job
+
+
+def cancel_job(job_id):
+    """Stop a download. One still waiting in the queue stops on the spot."""
+    with LOCK:
+        job = JOBS.get(job_id)
+    if not job or job.kind != "download" or job.status not in CANCELLABLE:
+        return False
+    job.cancel = True
+    if job.status == "queued":
+        job.status = "cancelled"
+    return True
+
+
+def cancel_all():
+    """Stop every download; the ones that never started leave the list straight away."""
+    with LOCK:
+        jobs = list(JOBS.values())
+    stopped = 0
+    for job in jobs:
+        was = job.status
+        if cancel_job(job.id):
+            stopped += 1
+            if was == "queued":
+                with LOCK:
+                    JOBS.pop(job.id, None)
+    return stopped
+
+
+def start_mega_downloads(url, nodes, disk=None):
+    """Queue what was picked in a Mega folder: one file as usual, several as one game."""
+    link = mega_parse_link(url)
+    if not link:
+        raise ValueError("это не ссылка на Mega")
+    if link["kind"] == "file":
+        return [start_download(url, disk).to_dict()]
+    data = mega_folder_files(link)
+    files = {f["h"]: f for f in data["files"]}
+    picked = [files[h] for h in dict.fromkeys(nodes or []) if h in files]
+    if not picked:
+        raise ValueError("не выбрано ни одного файла")
+    root = root_for(disk) if disk else None
+    if len(picked) == 1:
+        f = picked[0]
+        job = new_job("download", f["name"], root)
+        job.total = f["size"]
+        target, args = run_mega_download, (job, dict(link, node=f["h"]))
+    else:
+        job = new_job("download", safe_name(data["name"]), root)
+        job.total = sum(f["size"] for f in picked)
+        target, args = run_mega_folder, (job, link, picked)
+    threading.Thread(target=target, args=args, daemon=True).start()
+    return [job.to_dict()]
+'''),
+    'deckdrop.games': (False, 'deckdrop/games.py', r'''"""Games tab: list, import, add to Steam, hide, delete."""
+
+import shutil
+import subprocess
+import threading
+import urllib.parse
+from pathlib import Path
+
+from .art.covers import art_files, art_worker
+from .config import log
+from .detect import (
+    clean_title, find_exes, game_exe_path, is_linux_exe, name_candidates, pretty_name,
+    recommend, strip_exe_ext,
+)
+from .paths import dir_size, split_ext
+from .state import STATE, STATE_LOCK, save_state, update_added
+from .steam.cdp import CDP
+from .steam.compat import compat_for, compat_label, compat_mapping
+from .steam.library import shortcuts_index
+from .steam.session import session_env
+from .steam.shortcuts import queue_pending
+from .storage import disk_label_for, game_roots, import_allowed, imported_dirs, inside, inside_any
+
+
+def add_to_steam(game_dir, exe, name=None, tool=None):
+    """Add the executable to Steam under `name` (default: pretty_name) with compat `tool`
+    (None = default from settings, "" = none). Returns a note for the UI."""
+    p = game_exe_path(game_dir, exe)
+    linux = is_linux_exe(p)
+    if linux:
+        try:
+            p.chmod(p.stat().st_mode | 0o111)
+        except OSError:
+            pass
+    name = (name or "").strip() or pretty_name(p, game_dir)
+    tool = None if linux else ((STATE.get("default_compat") if tool is None else tool) or None)
+    if CDP.available():
+        appid = CDP.add_shortcut(name, str(p), str(p.parent))
+        try:
+            CDP.set_exe(appid, f'"{p}"', f'"{p.parent}"')
+        except Exception as e:  # noqa: BLE001
+            log(f"set exe/startdir after add: {e}")
+        if tool:
+            CDP.set_compat(appid, tool)
+        update_added(str(p), appid=appid, name=name, compat=tool, via="cdp", art=False)
+        threading.Thread(target=art_worker, args=(str(p), False, False), daemon=True).start()
+        return f"добавлено как «{name}»" + (f", {compat_label(tool)}" if tool else ", нативно без Proton")
+    # fallback: steamos-add-to-steam names the shortcut after the file; fix it up later via CEF
+    env, running = session_env()
+    if not running:
+        raise RuntimeError("Steam не запущен: открой библиотеку на деке и нажми ещё раз")
+    ok = False
+    if shutil.which("steamos-add-to-steam"):
+        res = subprocess.run(["steamos-add-to-steam", str(p)], capture_output=True, text=True, env=env, timeout=60)
+        ok = res.returncode == 0
+        if not ok:
+            log(f"steamos-add-to-steam failed ({res.returncode}): {(res.stderr or res.stdout).strip()}")
+    if not ok:
+        steam = shutil.which("steam")
+        if not steam:
+            raise RuntimeError("Steam не найден: добавь вручную в Desktop Mode")
+        subprocess.Popen([steam, "steam://addnonsteamgame/" + urllib.parse.quote(str(p))],
+                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    update_added(str(p), name=name, compat=tool, via="steamos", art=False)
+    queue_pending(op="rename", exe=str(p), name=name)
+    if tool:
+        queue_pending(op="compat", exe=str(p), tool=tool)
+    threading.Thread(target=art_worker, args=(str(p), False, True), daemon=True).start()
+    return ("добавлено; имя «" + name + "» и Proton применятся, когда включится управление Steam "
+            "(после перезагрузки дека)")
+
+
+def game_dirs():
+    """(dir, imported) for every card on the Игры tab: folders inside the roots, plus imported games."""
+    out = []
+    for root in game_roots():
+        if not root.is_dir():
+            continue
+        try:
+            kids = sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            continue
+        out += [(d, False) for d in kids if d.is_dir() and not d.name.startswith((".", "_"))]
+    out += [(d, True) for d in imported_dirs()]
+    return out
+
+
+def list_games():
+    out = []
+    try:
+        idx = shortcuts_index()
+    except Exception as e:  # noqa: BLE001
+        log(f"shortcuts index failed: {e}")
+        idx = {}
+    with STATE_LOCK:
+        added = dict(STATE.get("added", {}))
+        hidden = set(STATE.get("hidden", []))
+        pending = STATE.get("pending") or []
+    pending_exes = {op.get("exe") for op in pending}
+    if True:
+        for d, is_imported in game_dirs():
+            disk = disk_label_for(d)
+            rels = find_exes(d)
+            rec_exe = recommend(rels)
+            steam_names = [idx[str((d / r).resolve())]["name"] for r in rels if str((d / r).resolve()) in idx]
+            names = name_candidates(d, rels, steam_names)
+            exes = []
+            for rel in rels:
+                full = str((d / rel).resolve())
+                sc = idx.get(full)
+                rec = added.get(full, {})
+                appid = (sc or {}).get("appid") or rec.get("appid")
+                compat_info = compat_for(appid, rec)
+                exes.append({"exe": rel, "linux": is_linux_exe(rel), "recommended": rel == rec_exe,
+                             "in_steam": bool(sc) or bool(rec.get("appid") or rec.get("via")),
+                             "name": (sc or {}).get("name") or rec.get("name") or pretty_name(rel, d),
+                             "clean_name": clean_title((sc or {}).get("name") or rec.get("name") or "") or pretty_name(rel, d),
+                             "art": bool(rec.get("art")), "art_error": rec.get("art_error"),
+                             "art_source": rec.get("art_source"), "vndb_title": rec.get("vndb_title"),
+                             "art_note": rec.get("art_note"),
+                             "compat": compat_info[0], "compat_from": compat_info[1],
+                             "pending": full in pending_exes,
+                             "appid": appid})
+            chosen = [x for x in exes if x["in_steam"]]
+            title = chosen[0]["name"] if chosen else (names[0] if names else d.name)
+            out.append({"name": d.name, "title": title, "names": names, "path": str(d), "disk": disk,
+                        "exes": exes, "hidden": str(d) in hidden, "imported": is_imported})
+    return out
+
+
+# an exe often sits in a subfolder; the game folder is the one above it
+NESTED_DIRS = {"bin", "bin64", "binaries", "game", "x64", "x86", "win", "win32", "win64",
+               "windows", "data", "app", "runtime", "release"}
+
+
+def adopt_steam_settings(d):
+    """Copy what Steam already knows about the games in this folder into DeckDrop's own record.
+
+    Reads shortcuts.vdf, config.vdf and the grid folder; writes only DeckDrop's state file.
+    """
+    try:
+        idx = shortcuts_index()
+        ctmap = compat_mapping()
+    except Exception as e:  # noqa: BLE001
+        log(f"adopt: {e}")
+        return []
+    adopted = []
+    for rel in find_exes(d):
+        full = str((d / rel).resolve())
+        sc = idx.get(full)
+        if not sc:
+            continue
+        appid = sc["appid"]
+        kv = {"appid": appid, "via": "steam"}
+        name = clean_title(sc.get("name") or "") or strip_exe_ext(sc.get("name") or "")
+        if name:
+            kv["name"] = name
+        if appid in ctmap:
+            kv["compat"] = ctmap[appid] or None
+        try:
+            covers = sorted(art_files(appid, Path(sc["userdata"])))
+        except OSError:
+            covers = []
+        if covers:
+            kv.update(art=True, art_source="steam", art_note="обложки взяты из Steam")
+        update_added(full, **kv)
+        adopted.append({"exe": rel, "name": kv.get("name"), "compat": kv.get("compat"),
+                        "covers": covers, "appid": appid})
+    return adopted
+
+
+def import_game(path):
+    """Add one game that already lives somewhere on the Deck.
+
+    Nothing is copied, moved or installed: the folder stays where it is and simply becomes a card.
+    """
+    raw = (path or "").strip().strip('"').strip("'")
+    if not raw:
+        raise ValueError("укажи путь к файлу запуска игры")
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        raise ValueError("нужен полный путь, начиная с /")
+    try:
+        p = p.resolve()
+    except OSError as e:
+        raise ValueError(f"не смог разобрать путь: {e}") from e
+    if not p.exists():
+        raise ValueError(f"по этому пути ничего нет: {p}")
+    if not import_allowed(p):
+        raise ValueError("добавлять можно только из домашней папки или с подключённых носителей")
+    d = p if p.is_dir() else p.parent
+    if not p.is_dir() and d.name.lower() in NESTED_DIRS and d.parent != d and import_allowed(d.parent):
+        d = d.parent                      # .../Fate/bin/Fate.exe -> the game folder is .../Fate
+    if any(r.resolve() == d or inside(r, d) for r in game_roots() if r.exists()):
+        raise ValueError("эта игра и так внутри папки игр DeckDrop, она уже есть в списке")
+    if d in imported_dirs():
+        raise ValueError("эта игра уже добавлена")
+    exes = find_exes(d)
+    if not exes:
+        raise ValueError(f"в папке {d.name} не нашёл ни одного exe, sh или x86_64. "
+                         "Укажи путь к самому файлу запуска")
+    with STATE_LOCK:
+        STATE["imported"] = sorted({*(STATE.get("imported") or []), str(d)})
+        save_state()
+    adopted = adopt_steam_settings(d)
+    log(f"imported game {d} ({len(exes)} executables, {len(adopted)} already in Steam)")
+    return {"path": str(d), "name": d.name, "exes": exes, "disk": disk_label_for(d), "adopted": adopted}
+
+
+def unimport_game(path):
+    """Stop showing an imported game. The folder itself is left untouched."""
+    p = Path(path).resolve()
+    with STATE_LOCK:
+        cur = list(STATE.get("imported") or [])
+        keep = [x for x in cur if Path(x).resolve() != p]
+        if len(keep) == len(cur):
+            raise ValueError("эта игра не из добавленных вручную")
+        STATE["imported"] = keep
+        STATE["hidden"] = [h for h in STATE.get("hidden", []) if Path(h).resolve() != p]
+        STATE["added"] = {k: v for k, v in STATE.get("added", {}).items() if not inside(p, k)}
+        STATE["pending"] = [o for o in STATE.get("pending") or [] if not inside(p, o.get("exe", ""))]
+        save_state()
+    return p.name
+
+
+def import_candidates():
+    """Non-Steam shortcuts pointing outside DeckDrop's folders: one tap to show them here too."""
+    out, seen = [], set()
+    try:
+        idx = shortcuts_index()
+    except Exception as e:  # noqa: BLE001
+        log(f"import scan: {e}")
+        return out
+    imported = imported_dirs()
+    for exe, sc in idx.items():
+        if not exe or not Path(exe).is_absolute():
+            continue
+        p = Path(exe)
+        d = p.parent
+        if str(d) in seen or any(inside(r, p) for r in game_roots() if r.exists()):
+            continue
+        if d in imported or not import_allowed(d):
+            continue
+        seen.add(str(d))
+        out.append({"exe": exe, "dir": str(d), "name": sc.get("name"), "appid": sc.get("appid"),
+                    "exists": p.exists(), "disk": disk_label_for(d)})
+    out.sort(key=lambda c: (not c["exists"], (c["name"] or "").lower()))
+    return out
+
+
+def game_dir_path(path):
+    p = Path(path).resolve()
+    if p in imported_dirs():
+        return p
+    if not inside_any(p) or p.name.startswith("_") or not p.is_dir() or any(p == r.resolve() for r in game_roots()):
+        raise ValueError("неверный путь")
+    return p
+
+
+def game_info(path):
+    p = game_dir_path(path)
+    size, files = dir_size(p)
+    return {"size": size, "files": files, "mtime": int(p.stat().st_mtime)}
+
+
+def set_hidden(path, hidden):
+    p = str(game_dir_path(path))
+    with STATE_LOCK:
+        h = set(STATE.get("hidden", []))
+        (h.add if hidden else h.discard)(p)
+        STATE["hidden"] = sorted(h)
+        save_state()
+
+
+def delete_game(path, remove_shortcut=False):
+    p = game_dir_path(path)
+    removed, notes = [p.name], []
+    if remove_shortcut:
+        with STATE_LOCK:
+            recs = {k: v for k, v in STATE.get("added", {}).items() if inside(p, k)}
+        idx = shortcuts_index()
+        appids = {v.get("appid") for v in recs.values() if v.get("appid")}
+        appids |= {v["appid"] for k, v in idx.items() if inside(p, k)}
+        if appids and CDP.available():
+            for appid in appids:
+                try:
+                    CDP.remove_shortcut(appid)
+                    notes.append(f"ярлык {appid} убран из Steam")
+                except Exception as e:  # noqa: BLE001
+                    notes.append(f"ярлык {appid}: {e}")
+        elif appids:
+            notes.append("ярлык в Steam остался: управление Steam недоступно")
+    shutil.rmtree(p)
+    inbox = p.parent / "_inbox"
+    if inbox.is_dir():
+        for f in inbox.iterdir():
+            if f.is_file() and split_ext(f.name)[0] == p.name:
+                f.unlink()
+                removed.append(f.name)
+    with STATE_LOCK:
+        STATE["hidden"] = [h for h in STATE.get("hidden", []) if h != str(p)]
+        STATE["imported"] = [x for x in STATE.get("imported") or [] if Path(x).resolve() != p]
+        STATE["added"] = {k: v for k, v in STATE.get("added", {}).items() if not inside(p, k)}
+        STATE["pending"] = [o for o in STATE.get("pending") or [] if not inside(p, o.get("exe", ""))]
+        save_state()
+    return removed, notes
+'''),
+    'deckdrop.jobs': (False, 'deckdrop/jobs.py', r'''"""Download/extract jobs shown on the page."""
+
+import threading
+import time
+from pathlib import Path
+
+from .config import log
+from .storage import default_root, disk_label_for
+
+
+class Job:
+    _seq = 0
+
+    def __init__(self, kind, label, root=None):
+        Job._seq += 1
+        self.id = Job._seq
+        self.kind = kind            # download | upload | extract
+        self.label = label
+        self.status = "queued"      # queued resolving downloading uploading extracting needs_password done error
+        self.done = 0
+        self.total = 0
+        self.file = None
+        self.game_dir = None
+        self.error = None
+        self.cancel = False
+        self.work = None            # file or folder being written now, spared by the inbox cleanup
+        self.root = Path(root) if root else default_root()
+        self.started = time.time()
+
+    def to_dict(self):
+        elapsed = max(time.time() - self.started, 0.001)
+        return {
+            "id": self.id, "kind": self.kind, "label": self.label, "status": self.status,
+            "done": self.done, "total": self.total,
+            "speed": int(self.done / elapsed) if self.status in ("downloading", "uploading") else 0,
+            "file": self.file, "game_dir": self.game_dir, "error": self.error,
+            "disk": disk_label_for(self.root),
+        }
+
+
+JOBS = {}
+LOCK = threading.Lock()
+ACTIVE = ("queued", "resolving", "downloading", "uploading", "extracting")
+CANCELLABLE = ("queued", "resolving", "downloading")
+
+
+def new_job(kind, label, root=None):
+    with LOCK:
+        job = Job(kind, label, root)
+        JOBS[job.id] = job
+    return job
+
+
+def drop_part(part):
+    """Remove a half-written file. Done before a job is marked failed, never after."""
+    if part is not None:
+        try:
+            Path(part).unlink()
+        except OSError:
+            pass
+
+
+def fail(job, msg):
+    if job.cancel:
+        job.status, job.error = "cancelled", None
+        log(f"job {job.id} cancelled")
+        return
+    job.status = "error"
+    job.error = msg
+    log(f"job {job.id} error: {msg}")
+'''),
+    'deckdrop.media': (False, 'deckdrop/media.py', r'''"""Media gallery: Steam screenshots and recordings."""
+
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import time
+
+from .config import CACHE_DIR, CHUNK, FFMPEG, IMAGE_EXTS, MEDIA_DIRS, VIDEO_EXTS, log
+from .steam.library import _SC_CACHE, library_folders, shortcuts_index, userdata_dirs
+
+
+_MEDIA = {"at": 0, "items": [], "by_id": {}}
+_APP_NAMES = {}
+
+
+def app_name(appid):
+    if appid in _APP_NAMES:
+        return _APP_NAMES[appid]
+    name = None
+    for lib in library_folders():
+        acf = lib / "steamapps" / f"appmanifest_{appid}.acf"
+        if acf.is_file():
+            m = re.search(r'"name"\s+"([^"]*)"', acf.read_text("utf-8", "replace"))
+            name = m.group(1) if m else None
+            break
+    if not name and appid.isdigit():
+        shortcuts_index()
+        rec = _SC_CACHE["by_appid"].get(int(appid))
+        name = rec["name"] if rec else None
+    _APP_NAMES[appid] = name or f"app {appid}"
+    return _APP_NAMES[appid]
+
+
+def media_id(path):
+    return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:16]
+
+
+def clip_time(name, fallback):
+    m = re.search(r"_(\d{8})_(\d{6})", name)
+    if m:
+        try:
+            return int(time.mktime(time.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")))
+        except ValueError:
+            pass
+    return int(fallback)
+
+
+def scan_media(force=False):
+    if not force and time.time() - _MEDIA["at"] < 10:
+        return _MEDIA["items"]
+    items = []
+    for ud in userdata_dirs():
+        remote = ud / "760" / "remote"
+        if remote.is_dir():
+            for appdir in remote.iterdir():
+                shots = appdir / "screenshots"
+                if not shots.is_dir():
+                    continue
+                game = app_name(appdir.name)
+                for f in shots.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                        thumb = shots / "thumbnails" / f.name
+                        st = f.stat()
+                        items.append({"kind": "image", "path": f, "thumb": thumb if thumb.is_file() else None,
+                                      "name": f.name, "game": game, "time": int(st.st_mtime), "size": st.st_size})
+        for sub, label in (("clips", "клип"), ("video", "запись")):
+            base = ud / "gamerecordings" / sub
+            if not base.is_dir():
+                continue
+            for clip in base.iterdir():
+                if not clip.is_dir():
+                    continue
+                m = re.match(r"(?:clip|bg)_(\d+)_", clip.name)
+                game = app_name(m.group(1)) if m else clip.name
+                thumb = clip / "thumbnail.jpg"
+                size = sum(f.stat().st_size for f in clip.rglob("*.m4s"))
+                items.append({"kind": "clip", "path": clip, "thumb": thumb if thumb.is_file() else None,
+                              "name": f"{label} {clip.name}", "game": game,
+                              "time": clip_time(clip.name, clip.stat().st_mtime), "size": size})
+    for d in MEDIA_DIRS:
+        if not d.is_dir():
+            continue
+        for f in d.rglob("*"):
+            if len(f.relative_to(d).parts) > 3 or not f.is_file():
+                continue
+            ext = f.suffix.lower()
+            if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
+                st = f.stat()
+                items.append({"kind": "image" if ext in IMAGE_EXTS else "video", "path": f, "thumb": None,
+                              "name": f.name, "game": f.parent.name if f.parent != d else d.name,
+                              "time": int(st.st_mtime), "size": st.st_size})
+    items.sort(key=lambda i: i["time"], reverse=True)
+    for it in items:
+        it["id"] = media_id(it["path"])
+    _MEDIA.update(at=time.time(), items=items, by_id={i["id"]: i for i in items})
+    return items
+
+
+def media_item(mid):
+    it = _MEDIA["by_id"].get(mid)
+    if it is None:
+        scan_media(force=True)
+        it = _MEDIA["by_id"].get(mid)
+    if it is None:
+        raise FileNotFoundError(mid)
+    return it
+
+
+def _concat(files, out):
+    with open(out, "wb") as dst:
+        for f in files:
+            with open(f, "rb") as src:
+                shutil.copyfileobj(src, dst, CHUNK)
+
+
+def clip_mp4(item):
+    """Assemble a Steam recording (fragmented m4s chunks) into one mp4, cached."""
+    clip = item["path"]
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out = CACHE_DIR / f"{item['id']}.mp4"
+    if out.is_file() and out.stat().st_mtime >= clip.stat().st_mtime and out.stat().st_size > 0:
+        return out
+    inits = sorted(clip.rglob("init-stream0.m4s"))
+    if not inits:
+        raise FileNotFoundError("в клипе нет фрагментов видео")
+    vdir = inits[0].parent
+
+    def stream(n):
+        init = vdir / f"init-stream{n}.m4s"
+        chunks = sorted(vdir.glob(f"chunk-stream{n}-*.m4s"),
+                        key=lambda p: int(re.findall(r"(\d+)\.m4s$", p.name)[0]))
+        return [init] + chunks if init.is_file() and chunks else None
+
+    video, audio = stream(0), stream(1)
+    if not video:
+        raise FileNotFoundError("в клипе нет фрагментов видео")
+    tmp_v = out.with_suffix(".v.mp4")
+    _concat(video, tmp_v)
+    if audio and FFMPEG:
+        tmp_a = out.with_suffix(".a.mp4")
+        _concat(audio, tmp_a)
+        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", str(tmp_v), "-i", str(tmp_a),
+                              "-c", "copy", "-movflags", "+faststart", str(out)],
+                             capture_output=True, text=True, errors="replace", timeout=600)
+        tmp_a.unlink(missing_ok=True)
+        if res.returncode == 0:
+            tmp_v.unlink(missing_ok=True)
+            return out
+        log(f"ffmpeg mux failed, serving video only: {res.stderr.strip()[-200:]}")
+    os.replace(tmp_v, out)
+    return out
+
+
+PLACEHOLDER_SVG = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90">'
+                   b'<rect width="160" height="90" fill="#2a475e"/>'
+                   b'<polygon points="65,28 65,62 98,45" fill="#66c0f4"/></svg>')
+
+
+def media_thumb(item):
+    """Path to a thumbnail (Steam's, cached ffmpeg frame, or the image itself); None -> placeholder."""
+    if item["thumb"]:
+        return item["thumb"]
+    if item["kind"] == "image":
+        return item["path"]
+    if FFMPEG:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        th = CACHE_DIR / f"{item['id']}_thumb.jpg"
+        if th.is_file():
+            return th
+        src = clip_mp4(item) if item["kind"] == "clip" else item["path"]
+        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-ss", "1", "-i", str(src),
+                              "-frames:v", "1", "-vf", "scale=320:-2", str(th)],
+                             capture_output=True, text=True, errors="replace", timeout=120)
+        if res.returncode == 0 and th.is_file():
+            return th
+    return None
+
+
+def media_delete(mid):
+    item = media_item(mid)
+    p = item["path"]
+    if item["kind"] == "clip":
+        shutil.rmtree(p)
+    else:
+        p.unlink()
+        if item["thumb"] and item["thumb"].is_file():
+            item["thumb"].unlink()
+    for f in CACHE_DIR.glob(f"{mid}*"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    scan_media(force=True)
+    return item["name"]
+'''),
+    'deckdrop.mega': (False, 'deckdrop/mega.py', r'''"""mega.nz: link parsing, API, folder listings, decrypting downloads."""
+
+import base64
+import hmac
+import http.client
+import json
+import re
+import secrets
+import shutil
+import ssl
+import threading
+import time
+import urllib.error
+import urllib.parse
+from pathlib import Path
+
+from .aes import AesCtr, ZERO16, aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt
+from .archives import finish, flatten
+from .config import CHUNK, log
+from .jobs import drop_part, fail
+from .net import dl_proxy, net_open, net_reason, proxy_url
+from .paths import archive_volume, reserve_path, safe_name, split_ext, unique_dir
+from .state import STATE
+from .storage import inside
+
 
 MEGA_API = "https://g.api.mega.co.nz/cs"
 MEGA_HOSTS = ("mega.nz", "mega.co.nz", "mega.io")
@@ -1539,2346 +2831,246 @@ def run_mega_folder(job, link, picked):
     finally:
         if stage is not None:
             shutil.rmtree(stage, ignore_errors=True)
+'''),
+    'deckdrop.net': (False, 'deckdrop/net.py', r'''"""Networking: DeckDrop-only proxy (SOCKS5/HTTP), HTTP helpers, retries, link resolvers."""
+
+import http.client
+import json
+import re
+import socket
+import ssl
+import struct
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from .config import UA
+from .state import STATE
 
 
-def start_mega_downloads(url, nodes, disk=None):
-    """Queue what was picked in a Mega folder: one file as usual, several as one game."""
-    link = mega_parse_link(url)
-    if not link:
-        raise ValueError("это не ссылка на Mega")
-    if link["kind"] == "file":
-        return [start_download(url, disk).to_dict()]
-    data = mega_folder_files(link)
-    files = {f["h"]: f for f in data["files"]}
-    picked = [files[h] for h in dict.fromkeys(nodes or []) if h in files]
-    if not picked:
-        raise ValueError("не выбрано ни одного файла")
-    root = root_for(disk) if disk else None
-    if len(picked) == 1:
-        f = picked[0]
-        job = new_job("download", f["name"], root)
-        job.total = f["size"]
-        target, args = run_mega_download, (job, dict(link, node=f["h"]))
-    else:
-        job = new_job("download", safe_name(data["name"]), root)
-        job.total = sum(f["size"] for f in picked)
-        target, args = run_mega_folder, (job, link, picked)
-    threading.Thread(target=target, args=args, daemon=True).start()
-    return [job.to_dict()]
-
-# --------------------------------------------------------------------------- extraction
-
-class NeedsPassword(Exception):
-    """Archive is encrypted and the given password (if any) did not work."""
+SOCKS_ERR = {1: "общая ошибка прокси", 2: "прокси запретил соединение", 3: "сеть недоступна",
+             4: "хост недоступен", 5: "соединение отклонено", 6: "истёк TTL",
+             7: "команда не поддерживается", 8: "тип адреса не поддерживается"}
 
 
-PW_ERR = re.compile(r"passphrase|password|encrypt|wrong pass|incorrect pass", re.I)
-
-
-def zip_member_name(info):
-    name = info.filename
-    if not (info.flag_bits & 0x800):
-        # No UTF-8 flag: Python decoded the name as cp437. Russian archives made on
-        # Windows use cp866 (OEM), so re-decode; pure-ASCII names are unaffected.
-        try:
-            name = name.encode("cp437").decode("cp866")
-        except UnicodeError:
-            pass
-    return name
-
-
-def zip_encrypted(path):
+def mask_proxy(url):
+    """Proxy string with the credentials blanked out, safe to show without the PIN."""
+    url = (url or "").strip()
+    if not url:
+        return ""
     try:
-        with zipfile.ZipFile(path) as z:
-            return any(i.flag_bits & 0x1 for i in z.infolist() if not i.is_dir())
-    except (zipfile.BadZipFile, OSError):
-        return False
+        u = urllib.parse.urlparse(url)
+    except ValueError:
+        return "***"
+    if not (u.username or u.password):
+        return url
+    host = u.hostname or ""
+    if u.port:
+        host += f":{u.port}"
+    return f"{u.scheme}://***:***@{host}"
 
 
-def extract_zip_python(path, target, password=None):
-    root = target.resolve()
-    pwd = password.encode("utf-8") if password else None
-    with zipfile.ZipFile(path) as z:
-        for info in z.infolist():
-            name = zip_member_name(info).replace("\\", "/")
-            dest = (root / name).resolve()
-            if root != dest and root not in dest.parents:
-                continue  # zip-slip guard
-            if info.is_dir() or name.endswith("/"):
-                dest.mkdir(parents=True, exist_ok=True)
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with z.open(info, pwd=pwd) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst, CHUNK)
-            except RuntimeError as e:  # "Bad password for file" / "File is encrypted"
-                if "password" in str(e).lower() or "encrypted" in str(e).lower():
-                    raise NeedsPassword("неверный пароль" if password else "архив зашифрован") from e
-                raise
+def proxy_url():
+    return (STATE.get("proxy") or "").strip() or None
 
 
-def run_tool(cmd):
-    res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-    if res.returncode != 0:
-        msg = (res.stderr or res.stdout).strip()
-        if PW_ERR.search(msg):
-            raise NeedsPassword("неверный пароль" if any(a.startswith(("-p", "--passphrase")) for a in cmd[1:])
-                                else "архив зашифрован")
-        raise RuntimeError(f"{Path(cmd[0]).name}: {msg[-300:]}")
+def dl_proxy():
+    return proxy_url() if STATE.get("proxy_downloads") else None
 
 
-def extract(path, target, password=None):
-    target.mkdir(parents=True, exist_ok=True)
-    low = path.name.lower()
-    if low.endswith(".zip"):
-        if zip_encrypted(path) and not password:
-            raise NeedsPassword("архив зашифрован")
-        try:
-            extract_zip_python(path, target, password)
-            return
-        except NotImplementedError:
-            # AES-encrypted zip: Python can't, bsdtar / 7z can
-            if not password:
-                raise NeedsPassword("архив зашифрован") from None
-    tools = []
-    if shutil.which("bsdtar"):
-        tools.append(["bsdtar"] + (["--passphrase", password] if password else []) + ["-xf", str(path), "-C", str(target)])
-    if shutil.which("7z"):
-        tools.append(["7z", "x", "-y", "-p" + (password or ""), "-o" + str(target), str(path)])
-    if shutil.which("unrar") and low.endswith(".rar"):
-        tools.append(["unrar", "x", "-y", "-p" + (password or "-"), str(path), str(target) + os.sep])
-    if not tools:
-        raise RuntimeError("не найден распаковщик (bsdtar / 7z / unrar)")
-    last = None
-    for cmd in tools:
-        try:
-            run_tool(cmd)
-            return
-        except NeedsPassword:
-            raise
-        except RuntimeError as e:
-            last = e
-    raise last
+def net_reason(e):
+    """Network exception -> short Russian explanation with a hint about blocking."""
+    err = e
+    while isinstance(err, urllib.error.URLError) and not isinstance(err, urllib.error.HTTPError):
+        err = err.reason if isinstance(err.reason, BaseException) else err.reason
+        break
+    if isinstance(e, urllib.error.HTTPError):
+        return f"HTTP {e.code} {e.reason}"
+    text = str(err) or type(e).__name__
+    low = text.lower()
+    if "reset" in low or "104" in low or "10054" in low:
+        return f"соединение сброшено ({text}). Обычно это блокировка со стороны сети: попробуй прокси в настройках"
+    if "timed out" in low or "timeout" in low:
+        return f"нет ответа ({text}). Похоже на блокировку или медленную сеть: попробуй прокси в настройках"
+    if "name or service" in low or "getaddrinfo" in low or "resolve" in low:
+        return f"имя хоста не разрешается ({text}): проверь интернет на деке"
+    if "refused" in low:
+        return f"соединение отклонено ({text})"
+    if "certificate" in low or "ssl" in low:
+        return f"ошибка TLS ({text})"
+    return text
 
 
-def flatten(d):
-    """archive.zip -> Game/Game/*  becomes  Game/*"""
-    for _ in range(3):
-        entries = [e for e in d.iterdir() if e.name not in ("__MACOSX", ".DS_Store")]
-        if len(entries) == 1 and entries[0].is_dir():
-            tmp = d / (".flatten_" + entries[0].name)
-            entries[0].rename(tmp)
-            for e in tmp.iterdir():
-                shutil.move(str(e), str(d / e.name))
-            tmp.rmdir()
-        else:
-            break
+def _recv_exact(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("прокси закрыл соединение")
+        buf += chunk
+    return buf
 
 
-def try_extract(path, target, password):
-    """Extract into a fresh dir; on failure remove the partial dir and re-raise."""
+def socks5_connect(px, dest_host, dest_port, timeout):
+    """Open a TCP connection to dest through a SOCKS5 proxy (RFC 1928, optional user/password auth).
+
+    Hostnames are sent to the proxy, so DNS is resolved on the proxy side too - that is what
+    makes it work when the local resolver or route to the host is blocked.
+    """
+    sock = socket.create_connection((px.hostname, px.port or 1080), timeout)
     try:
-        extract(path, target, password)
+        sock.settimeout(timeout)
+        methods = b"\x00\x02" if px.username else b"\x00"
+        sock.sendall(bytes([5, len(methods)]) + methods)
+        ver, method = _recv_exact(sock, 2)
+        if ver != 5:
+            raise ConnectionError("это не SOCKS5-прокси")
+        if method == 2:
+            u = urllib.parse.unquote(px.username or "").encode()
+            pw = urllib.parse.unquote(px.password or "").encode()
+            sock.sendall(bytes([1, len(u)]) + u + bytes([len(pw)]) + pw)
+            if _recv_exact(sock, 2)[1] != 0:
+                raise ConnectionError("прокси не принял логин или пароль")
+        elif method != 0:
+            raise ConnectionError("прокси требует авторизацию, которую я не умею")
+        host = dest_host.encode("idna")
+        sock.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host + struct.pack(">H", dest_port))
+        rep = _recv_exact(sock, 4)
+        if rep[1] != 0:
+            raise ConnectionError("прокси: " + SOCKS_ERR.get(rep[1], f"код {rep[1]}"))
+        atyp = rep[3]
+        if atyp == 1:
+            _recv_exact(sock, 4)
+        elif atyp == 3:
+            _recv_exact(sock, _recv_exact(sock, 1)[0])
+        elif atyp == 4:
+            _recv_exact(sock, 16)
+        _recv_exact(sock, 2)
+        return sock
     except Exception:
-        shutil.rmtree(target, ignore_errors=True)
+        sock.close()
         raise
 
 
-def finish(job, path, password=None):
-    """Post-download: unpack archives (with remembered passwords), locate game dir."""
-    try:
-        if not (AUTO_EXTRACT and archive_volume(path.name) == "primary"):
-            job.status = "done"
-            log(f"job {job.id} done: {job.file}")
-            return
-        job.status = "extracting"
-        job.file = str(path)
-        stem = archive_stem(path.name)
-        stem = re.sub(r"\s*\(\d+\)\s*$", "", stem).strip() or stem   # 'Game (1).zip' from a PC re-download
-        target = unique_dir(job.root, stem)
-        candidates = [password] if password else [None] + list(STATE.get("archive_passwords") or [])
-        err = None
-        for cand in candidates:
-            try:
-                try_extract(path, target, cand)
-                err = None
-                break
-            except NeedsPassword as e:
-                err = e
-        if err is not None:
-            job.status = "needs_password"
-            job.error = str(err)
-            return
-        flatten(target)
-        job.game_dir = str(target)
-        if not KEEP_ARCHIVE:
-            path.unlink()
-            job.file = None
-        job.status = "done"
-        log(f"job {job.id} done: {job.game_dir}")
-    except Exception as e:  # noqa: BLE001
-        fail(job, f"ошибка распаковки: {e}")
+class Resp:
+    """Uniform response over urllib / http.client so callers can use read / headers / geturl."""
 
+    def __init__(self, raw, url):
+        self.raw, self._url, self.headers = raw, url, raw.headers
+        self.status = getattr(raw, "status", None) or getattr(raw, "code", None)
 
-def job_password(job_id, password, remember=False):
-    with LOCK:
-        job = JOBS.get(job_id)
-    if not job or job.status != "needs_password" or not job.file:
-        raise ValueError("это задание не ждёт пароль")
-    if remember and password:
-        with STATE_LOCK:
-            pws = list(STATE.get("archive_passwords") or [])
-            if password not in pws:
-                pws.append(password)
-            STATE["archive_passwords"] = pws
-            save_state()
-    job.status = "extracting"
-    job.error = None
-    threading.Thread(target=finish, args=(job, Path(job.file), password), daemon=True).start()
-    return job
+    def read(self, *a):
+        return self.raw.read(*a)
 
-# --------------------------------------------------------------------------- archives (inbox) tab
-
-def list_archives():
-    out = []
-    for root in game_roots():
-        inbox = root / "_inbox"
-        if not inbox.is_dir():
-            continue
-        label = disk_label_for(root)
-        for f in inbox.iterdir():
-            if not f.is_file() or f.name.endswith(".part"):
-                continue
-            stem, vol = archive_stem(f.name), archive_volume(f.name)
-            game = root / stem
-            st = f.stat()
-            out.append({"name": f.name, "path": str(f), "size": st.st_size, "time": int(st.st_mtime),
-                        "disk": label, "archive": vol == "primary", "part": vol == "secondary",
-                        "extracted": game.is_dir(), "game_dir": str(game) if game.is_dir() else None})
-    out.sort(key=lambda a: a["time"], reverse=True)
-    return out
-
-
-def archive_path(path):
-    p = Path(path).resolve()
-    if not p.is_file() or p.parent.name != "_inbox" or not inside_any(p):
-        raise ValueError("неверный путь")
-    return p
-
-
-def archive_extract_job(path):
-    p = archive_path(path)
-    if archive_volume(p.name) != "primary":
-        raise ValueError("это не архив или не первая его часть")
-    job = new_job("extract", p.name, p.parent.parent)
-    job.file = str(p)
-    threading.Thread(target=finish, args=(job, p), daemon=True).start()
-    return job
-
-
-def archive_delete(path):
-    p = archive_path(path)
-    p.unlink()
-    return p.name
-
-
-def archive_cleanup():
-    removed = []
-    for a in list_archives():
-        if a["extracted"]:
-            Path(a["path"]).unlink()
-            removed.append(a["name"])
-    return removed
-
-
-def _tree_size(p):
-    if p.is_symlink() or not p.is_dir():
-        return p.lstat().st_size
-    return sum(f.lstat().st_size for f in p.rglob("*") if f.is_file() and not f.is_symlink())
-
-
-def inbox_clear(dry_run=False):
-    """Empty every _inbox: archives unpacked or not, loose files, leftovers of stopped downloads.
-
-    Game folders are never touched, and neither is whatever a running job is writing or
-    unpacking at this moment. With dry_run it only counts what would go.
-    """
-    with LOCK:
-        jobs = list(JOBS.values())
-    busy = {Path(p).resolve() for j in jobs if j.status in ACTIVE for p in (j.work, j.file) if p}
-    out = {"removed": 0, "skipped": 0, "freed": 0}
-    for root in game_roots():
-        inbox = root / "_inbox"
-        if not inbox.is_dir():
-            continue
-        for e in list(inbox.iterdir()):
-            try:
-                if e.resolve() in busy:
-                    out["skipped"] += 1
-                    continue
-                size = _tree_size(e)
-                if not dry_run:
-                    if e.is_dir() and not e.is_symlink():
-                        shutil.rmtree(e)
-                    else:
-                        e.unlink()
-                out["removed"] += 1
-                out["freed"] += size
-            except OSError as ex:
-                log(f"inbox clear: {e}: {ex}")
-                out["skipped"] += 1
-    if not dry_run:
-        for j in jobs:                         # a job waiting for a password just lost its archive
-            if j.status == "needs_password" and j.file and not Path(j.file).exists():
-                j.status, j.error = "error", "архив удалён при очистке входящих"
-        log(f"inbox cleared: {out}")
-    return out
-
-# --------------------------------------------------------------------------- steam: userdata / vdf
-
-def userdata_dirs():
-    base = STEAM_ROOT / "userdata"
-    if not base.is_dir():
-        return []
-    out = [d for d in base.iterdir() if d.is_dir() and d.name.isdigit() and d.name != "0"]
-    out.sort(key=lambda d: (d / "config").stat().st_mtime if (d / "config").exists() else 0, reverse=True)
-    return out
-
-
-def vdf_parse(buf):
-    """Parse binary VDF (shortcuts.vdf). Keys are lower-cased."""
-    pos = 0
-
-    def read_str():
-        nonlocal pos
-        end = buf.index(b"\0", pos)
-        s = buf[pos:end].decode("utf-8", "replace")
-        pos = end + 1
-        return s
-
-    def read_map():
-        nonlocal pos
-        d = {}
-        while pos < len(buf):
-            t = buf[pos]
-            pos += 1
-            if t == 8:
-                return d
-            key = read_str().lower()
-            if t == 0:
-                d[key] = read_map()
-            elif t == 1:
-                d[key] = read_str()
-            elif t == 2:
-                d[key] = struct.unpack_from("<i", buf, pos)[0]
-                pos += 4
-            else:
-                raise ValueError(f"unknown vdf type {t}")
-        return d
-
-    return read_map()
-
-
-def text_vdf(text):
-    """Parse text VDF (libraryfolders.vdf, compatibilitytool.vdf). Key case is preserved."""
-    root, stack, key = {}, [], None
-    stack.append(root)
-    for m in re.finditer(r'"((?:[^"\\]|\\.)*)"|([{}])|//[^\n]*', text):
-        if m.group(2) == "{":
-            d = {}
-            stack[-1][key or ""] = d
-            stack.append(d)
-            key = None
-        elif m.group(2) == "}":
-            if len(stack) > 1:
-                stack.pop()
-            key = None
-        elif m.group(1) is not None:
-            val = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
-            if key is None:
-                key = val
-            else:
-                stack[-1][key] = val
-                key = None
-    return root
-
-
-def vget(d, *keys):
-    """Case-insensitive lookup through nested text-VDF dicts; None when missing."""
-    for k in keys:
-        if not isinstance(d, dict):
-            return None
-        d = next((v for kk, v in d.items() if kk.lower() == k.lower()), None)
-    return d
-
-
-def shortcut_appid(exe_quoted, appname):
-    """Steam's shortcut appid (32-bit) used for grid art filenames."""
-    return (zlib.crc32((exe_quoted + appname).encode("utf-8")) | 0x80000000) & 0xFFFFFFFF
-
-
-_SC_CACHE = {"key": None, "index": {}, "by_appid": {}}
-
-
-def shortcuts_index():
-    """{exe_path: {appid, name, userdata}} across all Steam users, cached by vdf mtimes."""
-    files = []
-    for ud in userdata_dirs():
-        f = ud / "config" / "shortcuts.vdf"
-        if f.is_file():
-            files.append((ud, f, f.stat().st_mtime_ns))
-    key = tuple((str(f), m) for _, f, m in files)
-    if key == _SC_CACHE["key"]:
-        return _SC_CACHE["index"]
-    index, by_appid = {}, {}
-    for ud, f, _ in files:
-        try:
-            data = vdf_parse(f.read_bytes())
-        except (ValueError, OSError, struct.error) as e:
-            log(f"shortcuts.vdf unreadable ({f}): {e}")
-            continue
-        for entry in (data.get("shortcuts") or {}).values():
-            if not isinstance(entry, dict):
-                continue
-            exe_q = entry.get("exe") or ""
-            name = entry.get("appname") or ""
-            appid = entry.get("appid")
-            appid = (appid & 0xFFFFFFFF) if isinstance(appid, int) and appid else shortcut_appid(exe_q, name)
-            rec = {"appid": appid, "name": name, "userdata": str(ud)}
-            index[exe_q.strip('"')] = rec
-            by_appid[appid] = rec
-    _SC_CACHE.update(key=key, index=index, by_appid=by_appid)
-    return index
-
-
-def pick_userdata():
-    idx = shortcuts_index()
-    if idx:
-        return Path(next(iter(idx.values()))["userdata"])
-    dirs = userdata_dirs()
-    if not dirs:
-        raise RuntimeError("не нашёл папку userdata Steam")
-    return dirs[0]
-
-
-def library_folders():
-    libs = [STEAM_ROOT]
-    vdf = STEAM_ROOT / "steamapps" / "libraryfolders.vdf"
-    if vdf.is_file():
-        try:
-            data = text_vdf(vdf.read_text("utf-8", "replace"))
-            for v in (vget(data, "libraryfolders") or {}).values():
-                if isinstance(v, dict) and vget(v, "path"):
-                    p = Path(vget(v, "path"))
-                    if p.is_dir() and p not in libs:
-                        libs.append(p)
-        except Exception as e:  # noqa: BLE001
-            log(f"libraryfolders.vdf: {e}")
-    return libs
-
-
-def compatdata_dir(appid):
-    for lib in library_folders():
-        d = lib / "steamapps" / "compatdata" / str(appid)
-        if d.is_dir():
-            return d
-    return STEAM_ROOT / "steamapps" / "compatdata" / str(appid)
-
-# --------------------------------------------------------------------------- steam: compat tools (Proton)
-
-_CT_CACHE = {"at": 0, "tools": []}
-
-
-def compat_tools():
-    """[{name, label}] - installed Valve Protons (from appmanifests) + compatibilitytools.d."""
-    if time.time() - _CT_CACHE["at"] < 60:
-        return _CT_CACHE["tools"]
-    tools, seen = [], set()
-
-    def add(name, label, rank):
-        if name and name not in seen:
-            seen.add(name)
-            tools.append((rank, {"name": name, "label": label}))
-
-    for lib in library_folders():
-        for acf in (lib / "steamapps").glob("appmanifest_*.acf"):
-            try:
-                m = re.search(r'"name"\s+"([^"]*)"', acf.read_text("utf-8", "replace"))
-            except OSError:
-                continue
-            title = m.group(1) if m else ""
-            m = re.match(r"Proton (Experimental|Hotfix|(\d+)\.(\d+))", title)
-            if not m:
-                continue
-            if m.group(1) == "Experimental":
-                add("proton_experimental", title, (0, 0))
-            elif m.group(1) == "Hotfix":
-                add("proton_hotfix", title, (1, 0))
-            else:
-                major, minor = int(m.group(2)), int(m.group(3))
-                add(f"proton_{major}" if minor == 0 else f"proton_{major}{minor}", title, (2, -(major * 100 + minor)))
-    for d in (STEAM_ROOT / "compatibilitytools.d", Path.home() / ".steam" / "root" / "compatibilitytools.d"):
-        for vdf in d.glob("*/compatibilitytool.vdf"):
-            try:
-                data = text_vdf(vdf.read_text("utf-8", "replace"))
-                ct = vget(data, "compatibilitytools", "compat_tools") or {}
-                for name, info in ct.items():
-                    label = vget(info, "display_name") if isinstance(info, dict) else None
-                    add(name, label or name, (3, 0))
-            except Exception as e:  # noqa: BLE001
-                log(f"{vdf}: {e}")
-    tools.sort(key=lambda t: t[0])
-    _CT_CACHE.update(at=time.time(), tools=[t[1] for t in tools])
-    return _CT_CACHE["tools"]
-
-
-_CT_MAP = {"key": None, "map": {}}
-
-
-def compat_mapping():
-    """appid -> compat tool name, straight from Steam's config.vdf.
-
-    This is the setting Steam actually uses, so a game added to Steam by hand (or imported into
-    DeckDrop) shows its real Proton instead of an empty box.
-    """
-    f = STEAM_ROOT / "config" / "config.vdf"
-    try:
-        key = (str(f), f.stat().st_mtime_ns)
-    except OSError:
-        return {}
-    if key == _CT_MAP["key"]:
-        return _CT_MAP["map"]
-    out = {}
-    try:
-        data = text_vdf(f.read_text("utf-8", "replace"))
-        mapping = vget(data, "InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping") or {}
-        for appid, info in mapping.items():
-            if appid.isdigit() and isinstance(info, dict):
-                out[int(appid)] = vget(info, "name") or ""
-    except Exception as e:  # noqa: BLE001
-        log(f"config.vdf: {e}")
-        return _CT_MAP["map"]
-    _CT_MAP.update(key=key, map=out)
-    return out
-
-
-def compat_for(appid, rec):
-    """Proton of a shortcut: our own record wins (it may be newer than the file), else Steam's."""
-    if "compat" in rec:
-        return rec.get("compat"), "deckdrop"
-    if appid is not None:
-        m = compat_mapping()
-        if appid in m:
-            return (m[appid] or None), "steam"
-    return None, None
-
-
-def compat_label(name):
-    for t in compat_tools():
-        if t["name"] == name:
-            return t["label"]
-    return name or "без Proton"
-
-# --------------------------------------------------------------------------- steam: session env (fallback path)
-
-STEAM_PROCS = ("steam", "steamwebhelper", "gamescope")  # ranked: best env source first
-SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR",
-                "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE")
-
-
-def proc_env(d, keys):
-    try:
-        raw = (d / "environ").read_bytes()
-    except OSError:
-        return {}
-    got = {}
-    for item in raw.split(b"\0"):
-        k, sep, v = item.decode("utf-8", "replace").partition("=")
-        if sep and k in keys and v:
-            got[k] = v
-    return got
-
-
-def session_env(proc="/proc"):
-    """Return (env, steam_running), borrowing session vars from the running Steam.
-
-    A systemd user service starts with a bare environment: no DISPLAY,
-    WAYLAND_DISPLAY, XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS. Without them
-    `steam steam://...` cannot reach the client running in Gaming Mode, so read
-    those values out of Steam's own /proc entry.
-    """
-    proc = Path(proc)
-    env = dict(os.environ)
-    if not proc.is_dir():
-        return env, False
-    uid = getattr(os, "getuid", lambda: None)()
-    running, ranked = False, []
-    for d in proc.iterdir():
-        if not d.name.isdigit():
-            continue
-        try:
-            if uid is not None and d.stat().st_uid != uid:
-                continue
-            comm = (d / "comm").read_text(errors="replace").strip()
-        except OSError:
-            continue
-        if comm not in STEAM_PROCS:
-            continue
-        running = running or comm in ("steam", "steamwebhelper")
-        got = proc_env(d, SESSION_KEYS)
-        if got.get("XDG_RUNTIME_DIR") and (got.get("DISPLAY") or got.get("WAYLAND_DISPLAY")):
-            ranked.append((STEAM_PROCS.index(comm), got))
-    if ranked:
-        env.update(min(ranked, key=lambda r: r[0])[1])
-    return env, running
-
-# --------------------------------------------------------------------------- steam: live control via CEF remote debugging
-
-def _ws_mask(data, mask):
-    n = len(data)
-    words = (n + 3) // 4
-    m = int.from_bytes(mask * words, "big")
-    d = int.from_bytes(data + b"\0" * (words * 4 - n), "big")
-    return (d ^ m).to_bytes(words * 4, "big")[:n]
-
-
-class WS:
-    """Minimal RFC 6455 client: text frames, fragmentation, ping/pong, close."""
-
-    def __init__(self, url, timeout=15):
-        u = urllib.parse.urlparse(url)
-        host, port = u.hostname, u.port or 80
-        self.sock = socket.create_connection((host, port), timeout=timeout)
-        self.sock.settimeout(timeout)
-        key = base64.b64encode(os.urandom(16)).decode()
-        path = u.path or "/"
-        if u.query:
-            path += "?" + u.query
-        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
-                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                           f"Sec-WebSocket-Version: 13\r\n\r\n").encode())
-        buf = b""
-        while b"\r\n\r\n" not in buf:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("websocket: соединение закрыто при рукопожатии")
-            buf += chunk
-        head, self.buf = buf.split(b"\r\n\r\n", 1)
-        status = head.split(b"\r\n", 1)[0]
-        if b" 101" not in status:
-            raise ConnectionError("websocket: " + status.decode(errors="replace"))
-        accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
-        if accept not in head:
-            raise ConnectionError("websocket: неверный Sec-WebSocket-Accept")
-
-    def _read(self, n):
-        while len(self.buf) < n:
-            chunk = self.sock.recv(65536)
-            if not chunk:
-                raise ConnectionError("websocket: соединение закрыто")
-            self.buf += chunk
-        out, self.buf = self.buf[:n], self.buf[n:]
-        return out
-
-    def _send(self, opcode, payload):
-        n = len(payload)
-        head = bytearray([0x80 | opcode])
-        if n < 126:
-            head.append(0x80 | n)
-        elif n < 65536:
-            head.append(0x80 | 126)
-            head += struct.pack(">H", n)
-        else:
-            head.append(0x80 | 127)
-            head += struct.pack(">Q", n)
-        mask = os.urandom(4)
-        self.sock.sendall(bytes(head) + mask + _ws_mask(payload, mask))
-
-    def send_text(self, text):
-        self._send(0x1, text.encode("utf-8"))
-
-    def recv_text(self):
-        message, started = bytearray(), False
-        while True:
-            b1, b2 = self._read(2)
-            fin, opcode, masked, n = b1 & 0x80, b1 & 0x0F, b2 & 0x80, b2 & 0x7F
-            if n == 126:
-                n = struct.unpack(">H", self._read(2))[0]
-            elif n == 127:
-                n = struct.unpack(">Q", self._read(8))[0]
-            mask = self._read(4) if masked else None
-            data = self._read(n)
-            if mask:
-                data = _ws_mask(data, mask)
-            if opcode == 0x8:
-                raise ConnectionError("websocket: закрыто сервером")
-            if opcode == 0x9:
-                self._send(0xA, data)
-                continue
-            if opcode == 0xA:
-                continue
-            if opcode in (0x1, 0x2):
-                message, started = bytearray(data), True
-            elif opcode == 0x0 and started:
-                message += data
-            if fin and started:
-                return message.decode("utf-8", "replace")
+    def geturl(self):
+        return self._url
 
     def close(self):
         try:
-            self._send(0x8, b"")
-        except OSError:
-            pass
-        try:
-            self.sock.close()
+            self.raw.close()
         except OSError:
             pass
 
+    def __enter__(self):
+        return self
 
-class SteamCDP:
-    """Drive the running Steam client through its CEF remote-debugging port.
+    def __exit__(self, *a):
+        self.close()
 
-    Enabled by the marker file <steam>/.cef-enable-remote-debugging (what Decky
-    Loader does); Steam picks it up on its next start. All calls evaluate JS in
-    Steam's SharedJSContext, where the SteamClient API lives.
-    """
 
-    def __init__(self, port):
-        self.port = port
-        self._cache = (0.0, None)
-
-    @property
-    def enabled(self):
-        return bool(STATE.get("cef_enabled", CEF_ENABLED))
-
-    def marker(self):
-        return STEAM_ROOT / ".cef-enable-remote-debugging"
-
-    def ensure_marker(self):
-        try:
-            if self.enabled and STEAM_ROOT.is_dir() and not self.marker().exists():
-                self.marker().touch()
-                log(f"created {self.marker()} - Steam control activates after the next Steam restart")
-            elif not self.enabled and self.marker().exists():
-                self.marker().unlink()
-        except OSError as e:
-            log(f"cef marker: {e}")
-
-    def target(self, force=False):
-        now = time.time()
-        if not force and now - self._cache[0] < 10:
-            return self._cache[1]
-        url = None
-        if self.enabled:
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=1.5) as r:
-                    targets = json.load(r)
-                for t in targets:
-                    if t.get("title") == "SharedJSContext" and t.get("webSocketDebuggerUrl"):
-                        url = t["webSocketDebuggerUrl"]
-                        break
-                if url is None:
-                    for t in targets:
-                        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
-                            url = t["webSocketDebuggerUrl"]
-                            break
-            except Exception:  # noqa: BLE001
-                url = None
-        self._cache = (now, url)
-        return url
-
-    def available(self):
-        return self.target() is not None
-
-    def status(self):
-        return {"enabled": self.enabled, "marker": self.marker().exists(), "available": self.available()}
-
-    def eval(self, expr, timeout=30):
-        url = self.target()
-        if not url:
-            raise RuntimeError("управление Steam недоступно")
-        ws = WS(url, timeout)
-        try:
-            ws.send_text(json.dumps({"id": 1, "method": "Runtime.evaluate",
-                                     "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}}))
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                msg = json.loads(ws.recv_text())
-                if msg.get("id") != 1:
-                    continue  # CDP events
-                if "error" in msg:
-                    raise RuntimeError("Steam: " + str(msg["error"].get("message")))
-                res = msg.get("result", {})
-                exc = res.get("exceptionDetails")
-                if exc:
-                    desc = (exc.get("exception") or {}).get("description") or exc.get("text") or "ошибка JS"
-                    raise RuntimeError("Steam JS: " + desc.splitlines()[0][:200])
-                return (res.get("result") or {}).get("value")
-            raise TimeoutError("Steam не ответил")
-        finally:
-            ws.close()
-
-    def call(self, fn, *args):
-        return self.eval(f"{fn}({', '.join(json.dumps(a, ensure_ascii=False) for a in args)})")
-
-    # -- SteamClient.Apps wrappers (same calls Decky plugins use)
-    def add_shortcut(self, name, exe, start_dir):
-        appid = self.call("SteamClient.Apps.AddShortcut", name, exe, start_dir, "")
-        if not isinstance(appid, (int, float)) or not appid:
-            raise RuntimeError(f"Steam не вернул appid ({appid!r})")
-        return int(appid) & 0xFFFFFFFF
-
-    def set_name(self, appid, name):
-        self.call("SteamClient.Apps.SetShortcutName", appid, name)
-
-    def set_exe(self, appid, exe_quoted, start_dir_quoted):
-        self.call("SteamClient.Apps.SetShortcutExe", appid, exe_quoted)
-        self.call("SteamClient.Apps.SetShortcutStartDir", appid, start_dir_quoted)
-
-    def set_compat(self, appid, tool):
-        self.call("SteamClient.Apps.SpecifyCompatTool", appid, tool or "")
-
-    def set_artwork(self, appid, data, ext, asset_type):
-        self.call("SteamClient.Apps.SetCustomArtworkForApp", appid, base64.b64encode(data).decode(), ext, asset_type)
-
-    def set_icon(self, appid, path):
-        self.call("SteamClient.Apps.SetShortcutIcon", appid, str(path))
-
-    def remove_shortcut(self, appid):
-        self.call("SteamClient.Apps.RemoveShortcut", appid)
-
-
-CDP = SteamCDP(CEF_PORT)
-
-# --------------------------------------------------------------------------- steam: names, add, rename, pending ops
-
-GENERIC_STEMS = {"game", "start", "launcher", "play", "run", "main", "app", "launch", "bin", "engine",
-                 "client", "nscript", "nscr", "kirikiri", "krkr", "krkrz", "siglus", "siglusengine",
-                 "bgi", "cmvs32", "cmvs64", "yuris", "advhd", "malie", "rugp", "system", "ayame",
-                 "game-32", "game-64", "exe", "win", "windows", "x64", "x86"}
-NAME_EXT_RE = re.compile(r"\.(exe|sh|x86_64|x86)$", re.I)
-
-
-def strip_exe_ext(name):
-    return NAME_EXT_RE.sub("", (name or "").strip()).strip()
-
-
-def is_generic_stem(stem):
-    return (stem.lower() in GENERIC_STEMS or len(stem) < 3
-            or bool(re.fullmatch(r"(game|start|launcher|play)[-_ ]?\d*", stem, re.I)))
-
-
-def clean_title(raw):
-    """Library-name cleanup: no extension, no (1)/[RUS]/(2019) tags, no version numbers,
-    underscores -> spaces, first letter capitalised."""
-    base = strip_exe_ext(raw)
-    base = re.sub(r"[\[\(].*?[\]\)]", " ", base)
-    base = re.sub(r"(?<![A-Za-z0-9])[vV]\.?\d+(\.\d+)*[a-z]?(?![A-Za-z0-9])", " ", base)
-    base = re.sub(r"[_]+", " ", base)
-    base = re.sub(r"\s+", " ", base).strip(" -_.")
-    return base[:1].upper() + base[1:] if base else ""
-
-
-def pretty_name(exe, game_dir):
-    """Library name: the exe stem when it says something, else the folder name; both cleaned."""
-    stem = Path(exe).stem
-    return clean_title(Path(game_dir).name if is_generic_stem(stem) else stem) or clean_title(stem) or stem
-
-
-def name_candidates(game_dir, rels, steam_names=()):
-    """Possible library names, best first: existing Steam names, exe stems (recommended exe first), folder name."""
-    out = []
-
-    def add(n):
-        if n and n.lower() not in {o.lower() for o in out}:
-            out.append(n)
-
-    for n in steam_names:
-        add(clean_title(n) or strip_exe_ext(n))
-    rec = recommend(rels) if rels else None
-    for r in ([rec] if rec else []) + [r for r in rels if r != rec]:
-        stem = Path(r).stem
-        if not is_generic_stem(stem):
-            add(clean_title(stem))
-    add(clean_title(Path(game_dir).name))
-    return out
-
-def is_linux_exe(path):
-    return str(path).lower().endswith(LINUX_EXTS)
-
-
-def game_exe_path(game_dir, exe):
-    p = (Path(game_dir) / exe).resolve()
-    if not inside_any(p) or not p.is_file():
-        raise ValueError("неверный путь")
-    return p
-
-
-def queue_pending(**op):
-    with STATE_LOCK:
-        pend = list(STATE.get("pending") or [])
-        pend = [o for o in pend if not (o.get("op") == op["op"] and o.get("exe") == op["exe"])]
-        pend.append(op)
-        STATE["pending"] = pend
-        save_state()
-
-
-def resolve_appid(exe, wait=0):
-    """appid of the shortcut for exe: from state, else shortcuts.vdf (polling up to `wait` s)."""
-    rec = added_rec(str(exe))
-    if rec.get("appid"):
-        return rec["appid"]
-    deadline = time.time() + wait
-    while True:
-        sc = shortcuts_index().get(str(exe))
-        if sc:
-            update_added(str(exe), appid=sc["appid"])
-            return sc["appid"]
-        if time.time() >= deadline:
-            return None
-        time.sleep(1)
-
-
-def add_to_steam(game_dir, exe, name=None, tool=None):
-    """Add the executable to Steam under `name` (default: pretty_name) with compat `tool`
-    (None = default from settings, "" = none). Returns a note for the UI."""
-    p = game_exe_path(game_dir, exe)
-    linux = is_linux_exe(p)
-    if linux:
-        try:
-            p.chmod(p.stat().st_mode | 0o111)
-        except OSError:
-            pass
-    name = (name or "").strip() or pretty_name(p, game_dir)
-    tool = None if linux else ((STATE.get("default_compat") if tool is None else tool) or None)
-    if CDP.available():
-        appid = CDP.add_shortcut(name, str(p), str(p.parent))
-        try:
-            CDP.set_exe(appid, f'"{p}"', f'"{p.parent}"')
-        except Exception as e:  # noqa: BLE001
-            log(f"set exe/startdir after add: {e}")
-        if tool:
-            CDP.set_compat(appid, tool)
-        update_added(str(p), appid=appid, name=name, compat=tool, via="cdp", art=False)
-        threading.Thread(target=art_worker, args=(str(p), False, False), daemon=True).start()
-        return f"добавлено как «{name}»" + (f", {compat_label(tool)}" if tool else ", нативно без Proton")
-    # fallback: steamos-add-to-steam names the shortcut after the file; fix it up later via CEF
-    env, running = session_env()
-    if not running:
-        raise RuntimeError("Steam не запущен: открой библиотеку на деке и нажми ещё раз")
-    ok = False
-    if shutil.which("steamos-add-to-steam"):
-        res = subprocess.run(["steamos-add-to-steam", str(p)], capture_output=True, text=True, env=env, timeout=60)
-        ok = res.returncode == 0
-        if not ok:
-            log(f"steamos-add-to-steam failed ({res.returncode}): {(res.stderr or res.stdout).strip()}")
-    if not ok:
-        steam = shutil.which("steam")
-        if not steam:
-            raise RuntimeError("Steam не найден: добавь вручную в Desktop Mode")
-        subprocess.Popen([steam, "steam://addnonsteamgame/" + urllib.parse.quote(str(p))],
-                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    update_added(str(p), name=name, compat=tool, via="steamos", art=False)
-    queue_pending(op="rename", exe=str(p), name=name)
-    if tool:
-        queue_pending(op="compat", exe=str(p), tool=tool)
-    threading.Thread(target=art_worker, args=(str(p), False, True), daemon=True).start()
-    return ("добавлено; имя «" + name + "» и Proton применятся, когда включится управление Steam "
-            "(после перезагрузки дека)")
-
-
-def rename_shortcut(game_dir, exe, name):
-    p = game_exe_path(game_dir, exe)
-    name = name.strip()
-    if not name:
-        raise ValueError("пустое имя")
-    update_added(str(p), name=name)
-    appid = resolve_appid(p)
-    if CDP.available() and appid:
-        CDP.set_name(appid, name)
-        return f"переименовано в «{name}»"
-    queue_pending(op="rename", exe=str(p), name=name)
-    return "переименование в очереди до включения управления Steam"
-
-
-def set_compat_for(game_dir, exe, tool):
-    p = game_exe_path(game_dir, exe)
-    update_added(str(p), compat=tool or None)
-    appid = resolve_appid(p)
-    if CDP.available() and appid:
-        CDP.set_compat(appid, tool or "")
-        return f"Proton: {compat_label(tool)}"
-    queue_pending(op="compat", exe=str(p), tool=tool or "")
-    return "смена Proton в очереди до включения управления Steam"
-
-
-def drain_pending():
-    with STATE_LOCK:
-        ops = list(STATE.get("pending") or [])
-    if not ops or not CDP.available():
-        return 0
-    remaining, done = [], 0
-    for op in ops:
-        try:
-            appid = resolve_appid(op["exe"])
-            if not appid:
-                remaining.append(op)
-                continue
-            if op["op"] == "rename":
-                CDP.set_name(appid, op["name"])
-            elif op["op"] == "compat":
-                CDP.set_compat(appid, op.get("tool") or "")
-            done += 1
-            log(f"pending {op['op']} applied for {Path(op['exe']).name}")
-        except Exception as e:  # noqa: BLE001
-            op["error"] = str(e)
-            op["tries"] = op.get("tries", 0) + 1
-            if op["tries"] < 20:
-                remaining.append(op)
-            log(f"pending {op['op']} failed: {e}")
-    with STATE_LOCK:
-        STATE["pending"] = remaining
-        save_state()
-    return done
-
-
-def pending_loop():
-    while True:
-        time.sleep(20)
-        try:
-            drain_pending()
-        except Exception as e:  # noqa: BLE001
-            log(f"pending loop: {e}")
-
-# --------------------------------------------------------------------------- images: PE icon, ICO, PNG, DIB
-
-def pe_icon(path):
-    """Best icon image (raw PNG or DIB bytes) from a PE executable, or None."""
-    try:
-        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
-            return _pe_icon(m)
-    except (OSError, ValueError, struct.error, IndexError, KeyError):
-        return None
-
-
-def _pe_icon(m):
-    if m[:2] != b"MZ":
-        return None
-    pe = struct.unpack_from("<I", m, 0x3C)[0]
-    if m[pe:pe + 4] != b"PE\0\0":
-        return None
-    nsec = struct.unpack_from("<H", m, pe + 6)[0]
-    opt_size = struct.unpack_from("<H", m, pe + 20)[0]
-    opt = pe + 24
-    magic = struct.unpack_from("<H", m, opt)[0]
-    dd = opt + (96 if magic == 0x10B else 112)
-    rsrc_rva = struct.unpack_from("<I", m, dd + 2 * 8)[0]
-    if not rsrc_rva:
-        return None
-    sections = []
-    sec = opt + opt_size
-    for i in range(nsec):
-        vsize, va, rawsize, rawptr = struct.unpack_from("<IIII", m, sec + i * 40 + 8)
-        sections.append((va, max(vsize, rawsize), rawptr))
-
-    def off(rva):
-        for va, size, ptr in sections:
-            if va <= rva < va + size:
-                return rva - va + ptr
-        raise ValueError("rva outside sections")
-
-    base = off(rsrc_rva)
-
-    def entries(dir_off):
-        n_named, n_id = struct.unpack_from("<HH", m, dir_off + 12)
-        return [struct.unpack_from("<II", m, dir_off + 16 + i * 8) for i in range(n_named + n_id)]
-
-    def leaf(e):
-        while e & 0x80000000:
-            subs = entries(base + (e & 0x7FFFFFFF))
-            if not subs:
-                raise ValueError("empty resource dir")
-            e = subs[0][1]
-        rva, size = struct.unpack_from("<II", m, base + e)
-        o = off(rva)
-        return bytes(m[o:o + size])
-
-    types = dict(entries(base))
-    if 14 not in types or 3 not in types:
-        return None
-    icons = dict(entries(base + (types[3] & 0x7FFFFFFF)))
-    groups = entries(base + (types[14] & 0x7FFFFFFF))
-    if not groups:
-        return None
-    grp = leaf(groups[0][1])
-    count = struct.unpack_from("<H", grp, 4)[0]
-    best = None
-    for i in range(count):
-        w, _h, _cc, _res, _planes, bpp, _size, ident = struct.unpack_from("<BBBBHHIH", grp, 6 + i * 14)
-        if ident not in icons:
-            continue
-        score = ((w or 256), bpp)
-        if best is None or score > best[0]:
-            best = (score, icons[ident])
-    return leaf(best[1]) if best else None
-
-
-def ico_best(data):
-    """Best image (raw PNG or DIB bytes) from an .ico file."""
-    count = struct.unpack_from("<H", data, 4)[0]
-    best = None
-    for i in range(count):
-        w, _h, _cc, _res, _planes, bpp, size, offset = struct.unpack_from("<BBBBHHII", data, 6 + i * 16)
-        score = ((w or 256), bpp)
-        if best is None or score > best[0]:
-            best = (score, data[offset:offset + size])
-    return best[1] if best else None
-
-
-def _paeth(a, b, c):
-    p = a + b - c
-    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-    return a if pa <= pb and pa <= pc else (b if pb <= pc else c)
-
-
-def png_decode(data):
-    """Minimal PNG decoder (8-bit, non-interlaced) -> (w, h, rgba bytes)."""
-    if data[:8] != PNG_SIG:
-        raise ValueError("not a png")
-    pos, idat, plte, trns = 8, [], b"", b""
-    w = h = ct = bd = il = 0
-    while pos + 8 <= len(data):
-        ln, typ = struct.unpack_from(">I4s", data, pos)
-        body = data[pos + 8:pos + 8 + ln]
-        pos += 12 + ln
-        if typ == b"IHDR":
-            w, h, bd, ct, _, _, il = struct.unpack(">IIBBBBB", body)
-        elif typ == b"PLTE":
-            plte = body
-        elif typ == b"tRNS":
-            trns = body
-        elif typ == b"IDAT":
-            idat.append(body)
-        elif typ == b"IEND":
-            break
-    if bd != 8 or il or ct not in (0, 2, 3, 4, 6):
-        raise ValueError("unsupported png")
-    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ct]
-    raw = zlib.decompress(b"".join(idat))
-    stride = w * ch
-    prev = bytearray(stride)
-    out = bytearray()
-    pos = 0
-    for _ in range(h):
-        f = raw[pos]
-        line = bytearray(raw[pos + 1:pos + 1 + stride])
-        pos += 1 + stride
-        if f == 1:
-            for x in range(ch, stride):
-                line[x] = (line[x] + line[x - ch]) & 0xFF
-        elif f == 2:
-            for x in range(stride):
-                line[x] = (line[x] + prev[x]) & 0xFF
-        elif f == 3:
-            for x in range(stride):
-                line[x] = (line[x] + (((line[x - ch] if x >= ch else 0) + prev[x]) >> 1)) & 0xFF
-        elif f == 4:
-            for x in range(stride):
-                a = line[x - ch] if x >= ch else 0
-                c = prev[x - ch] if x >= ch else 0
-                line[x] = (line[x] + _paeth(a, prev[x], c)) & 0xFF
-        out += line
-        prev = line
-    if ct == 6:
-        return w, h, bytes(out)
-    px = bytearray(w * h * 4)
-    for i in range(w * h):
-        o = i * 4
-        if ct == 2:
-            px[o:o + 3] = out[i * 3:i * 3 + 3]
-            px[o + 3] = 255
-        elif ct == 0:
-            px[o] = px[o + 1] = px[o + 2] = out[i]
-            px[o + 3] = 255
-        elif ct == 4:
-            px[o] = px[o + 1] = px[o + 2] = out[i * 2]
-            px[o + 3] = out[i * 2 + 1]
-        else:
-            idx = out[i]
-            px[o:o + 3] = plte[idx * 3:idx * 3 + 3]
-            px[o + 3] = trns[idx] if idx < len(trns) else 255
-    return w, h, bytes(px)
-
-
-def png_encode(w, h, rgba):
-    raw = b"".join(b"\0" + rgba[y * w * 4:(y + 1) * w * 4] for y in range(h))
-
-    def chunk(t, d):
-        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
-
-    return (PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
-
-
-def dib_decode(data):
-    """Icon DIB (BITMAPINFOHEADER + XOR bitmap + AND mask) -> (w, h, rgba)."""
-    size, w, h2, _planes, bpp, comp = struct.unpack_from("<IiiHHI", data, 0)
-    if comp != 0 or bpp not in (1, 4, 8, 24, 32):
-        raise ValueError(f"unsupported dib (bpp={bpp}, comp={comp})")
-    h = abs(h2)
-    if h == 2 * w:      # icon DIBs store XOR+AND bitmaps stacked, so height is doubled
-        h //= 2
-    off = size
-    palette = []
-    if bpp <= 8:
-        n = 1 << bpp
-        palette = [data[off + i * 4:off + i * 4 + 4] for i in range(n)]
-        off += n * 4
-    row = ((w * bpp + 31) // 32) * 4
-    mask_row = ((w + 31) // 32) * 4
-    xor_off, and_off = off, off + row * h
-    has_mask = and_off + mask_row * h <= len(data)
-    use_alpha = False
-    if bpp == 32:
-        use_alpha = any(data[xor_off + i * 4 + 3] for i in range(w * h))
-    px = bytearray(w * h * 4)
-    for y in range(h):
-        sr = xor_off + (h - 1 - y) * row
-        mr = and_off + (h - 1 - y) * mask_row
-        for x in range(w):
-            a = 255
-            if bpp == 32:
-                b, g, r, a32 = data[sr + x * 4:sr + x * 4 + 4]
-                if use_alpha:
-                    a = a32
-            elif bpp == 24:
-                b, g, r = data[sr + x * 3:sr + x * 3 + 3]
-            else:
-                if bpp == 8:
-                    idx = data[sr + x]
-                elif bpp == 4:
-                    idx = (data[sr + x // 2] >> (4 if x % 2 == 0 else 0)) & 15
-                else:
-                    idx = (data[sr + x // 8] >> (7 - x % 8)) & 1
-                b, g, r = palette[idx][:3]
-            if not use_alpha and has_mask:
-                a = 0 if (data[mr + x // 8] >> (7 - x % 8)) & 1 else 255
-            o = (y * w + x) * 4
-            px[o], px[o + 1], px[o + 2], px[o + 3] = r, g, b, a
-    return w, h, bytes(px)
-
-
-def decode_icon_image(data):
-    return png_decode(data) if data[:8] == PNG_SIG else dib_decode(data)
-
-
-def find_icon_file(game_dir):
-    """Fallback for games without an exe icon: an .ico / icon png in the game folder."""
-    pats = ("*.ico", "*/*.ico", "icon.png", "*/icon.png", "*/window_icon.png", "*/*/window_icon.png", "*icon*.png")
-    for pat in pats:
-        for p in sorted(Path(game_dir).glob(pat)):
-            try:
-                data = p.read_bytes()
-                return decode_icon_image(ico_best(data) if p.suffix.lower() == ".ico" else data)
-            except (ValueError, struct.error, zlib.error, IndexError):
-                continue
-    return None
-
-
-def load_icon(exe_path):
-    p = Path(exe_path)
-    if p.suffix.lower() == ".exe":
-        raw = pe_icon(p)
-        if raw:
-            try:
-                return decode_icon_image(raw)
-            except (ValueError, struct.error, zlib.error, IndexError) as e:
-                log(f"icon decode failed for {p.name}: {e}")
-    return find_icon_file(p.parent)
-
-
-def dominant_color(w, h, rgba):
-    r = g = b = n = 0
-    for i in range(0, w * h * 4, 4 * max(1, (w * h) // 4096)):
-        if rgba[i + 3] > 128:
-            r += rgba[i]
-            g += rgba[i + 1]
-            b += rgba[i + 2]
-            n += 1
-    if not n:
-        return (0x1B, 0x28, 0x38)
-    return tuple(int(c / n * 0.35) for c in (r, g, b))
-
-
-def compose(cw, ch, iw, ih, rgba, bg, frac):
-    """Nearest-neighbour scale the icon to `frac` of the canvas and centre it on a solid bg."""
-    scale = min(cw * frac / iw, ch * frac / ih)
-    tw, th = max(1, int(iw * scale)), max(1, int(ih * scale))
-    xs = [min(iw - 1, int(x / scale)) * 4 for x in range(tw)]
-    ys = [min(ih - 1, int(y / scale)) for y in range(th)]
-    ox, oy = (cw - tw) // 2, (ch - th) // 2
-    bgpx = bytes(bg) + b"\xff"
-    canvas = bytearray(bgpx * (cw * ch))
-    for ty in range(th):
-        srow = rgba[ys[ty] * iw * 4:(ys[ty] + 1) * iw * 4]
-        row = bytearray(tw * 4)
-        for tx in range(tw):
-            sx = xs[tx]
-            a = srow[sx + 3]
-            o = tx * 4
-            if a == 255:
-                row[o:o + 4] = srow[sx:sx + 4]
-            elif a == 0:
-                row[o:o + 4] = bgpx
-            else:
-                ia = 255 - a
-                row[o] = (srow[sx] * a + bg[0] * ia) // 255
-                row[o + 1] = (srow[sx + 1] * a + bg[1] * ia) // 255
-                row[o + 2] = (srow[sx + 2] * a + bg[2] * ia) // 255
-                row[o + 3] = 255
-        start = ((oy + ty) * cw + ox) * 4
-        canvas[start:start + tw * 4] = row
-    return bytes(canvas)
-
-# --------------------------------------------------------------------------- ffmpeg helpers (optional, better quality)
-
-def ff_run(inp, in_ext, args, out_ext, timeout=120):
-    """Run ffmpeg on bytes -> bytes (via temp files). Raises RuntimeError on failure."""
-    if not FFMPEG:
-        raise RuntimeError("ffmpeg не найден")
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tag = secrets.token_hex(4)
-    src = CACHE_DIR / f"ff_{tag}_in.{in_ext}"
-    dst = CACHE_DIR / f"ff_{tag}_out.{out_ext}"
-    try:
-        src.write_bytes(inp)
-        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", str(src)] + args + [str(dst)],
-                             capture_output=True, text=True, errors="replace", timeout=timeout)
-        if res.returncode != 0 or not dst.is_file():
-            raise RuntimeError("ffmpeg: " + res.stderr.strip()[-300:])
-        return dst.read_bytes()
-    finally:
-        for f in (src, dst):
-            try:
-                f.unlink()
-            except OSError:
-                pass
-
-
-def ff_cover(inp, in_ext, w, h):
-    """Scale-to-fill and centre-crop to exactly w x h (jpg)."""
-    return ff_run(inp, in_ext, ["-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
-                                "-frames:v", "1", "-q:v", "3"], "jpg")
-
-
-def ff_fit_blur(inp, in_ext, w, h):
-    """Fit inside w x h over a blurred, filled copy of itself (jpg)."""
-    vf = (f"split[a][b];[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=20:2[bg];"
-          f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
-    return ff_run(inp, in_ext, ["-vf", vf, "-frames:v", "1", "-q:v", "3"], "jpg")
-
-
-def find_font(text=""):
-    cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", text))
-    dirs = [Path("/usr/share/fonts"), Path.home() / ".local/share/fonts", Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"]
-    prefs = (["NotoSansCJK-Bold.ttc", "NotoSansCJKjp-Bold.otf", "NotoSansCJK-Regular.ttc"] if cjk else []) + \
-            ["DejaVuSans-Bold.ttf", "NotoSans-Bold.ttf", "LiberationSans-Bold.ttf", "arialbd.ttf", "segoeuib.ttf"]
-    found = {}
-    for d in dirs:
-        if d.is_dir():
-            for f in d.rglob("*"):
-                if f.suffix.lower() in (".ttf", ".otf", ".ttc") and f.name not in found:
-                    found[f.name] = f
-    for name in prefs:
-        if name in found:
-            return found[name]
-    return next(iter(found.values()), None)
-
-
-def ff_logo(title):
-    """Transparent PNG with the title as text (Steam 'logo' asset)."""
-    font = find_font(title)
-    if not font:
-        raise RuntimeError("шрифт не найден")
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tag = secrets.token_hex(4)
-    txt = CACHE_DIR / f"logo_{tag}.txt"
-    out = CACHE_DIR / f"logo_{tag}.png"
-    size = max(48, min(120, int(1700 / max(len(title), 1))))
-    fontfile = str(font).replace("\\", "/").replace(":", "\\:")
-    try:
-        txt.write_text(title, "utf-8")
-        vf = (f"drawtext=fontfile='{fontfile}':textfile='{str(txt).replace(chr(92), '/').replace(':', chr(92) + ':')}'"
-              f":fontsize={size}:fontcolor=white:borderw=4:bordercolor=black@0.55:x=(w-text_w)/2:y=(h-text_h)/2")
-        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black@0.0:s=1280x400,format=rgba",
-                              "-vf", vf, "-frames:v", "1", str(out)], capture_output=True, text=True, errors="replace", timeout=60)
-        if res.returncode != 0 or not out.is_file():
-            raise RuntimeError("ffmpeg drawtext: " + res.stderr.strip()[-200:])
-        return out.read_bytes()
-    finally:
-        for f in (txt, out):
-            try:
-                f.unlink()
-            except OSError:
-                pass
-
-# --------------------------------------------------------------------------- cover art: icon-based, VNDB, apply
-
-# SteamClient.Apps.SetCustomArtworkForApp knows four artwork slots only. There is no type for the
-# shortcut icon: sending one used to land in the landscape slot. The icon goes through SetShortcutIcon.
-ASSET_TYPE = {"portrait": 0, "hero": 1, "logo": 2, "landscape": 3}
-GRID_SUFFIX = {"portrait": "p", "landscape": "", "hero": "_hero", "logo": "_logo", "icon": "_icon"}
-SIZES = {"portrait": (600, 900), "landscape": (920, 430), "hero": (1920, 620)}
-
-
-def capsule_png(icon, cw, ch, frac):
-    iw, ih, rgba = icon
-    bg = dominant_color(iw, ih, rgba)
-    if FFMPEG:
-        tw, th = int(cw * frac), int(ch * frac)
-        fc = (f"color=c=0x{bg[0]:02x}{bg[1]:02x}{bg[2]:02x}:s={cw}x{ch}:d=1[bg];"
-              f"[0:v]scale={tw}:{th}:force_original_aspect_ratio=decrease:flags=lanczos[ic];"
-              f"[bg][ic]overlay=(W-w)/2:(H-h)/2:shortest=1,format=rgb24")
-        try:
-            return ff_run(png_encode(iw, ih, rgba), "png", ["-filter_complex", fc, "-frames:v", "1"], "png")
-        except RuntimeError as e:
-            log(f"ffmpeg capsule failed, falling back: {e}")
-    return png_encode(cw, ch, compose(cw, ch, iw, ih, rgba, bg, frac))
-
-
-def norm_title(s):
-    return re.sub(r"[^a-z0-9а-яё]+", "", s.lower())
-
-
-def vndb_fetch(url, timeout=40):
-    """Download a VNDB image through DeckDrop's proxy setting, with retries."""
-    def go():
-        with net_open(url, headers={"User-Agent": VNDB_UA}, timeout=timeout, proxy=proxy_url()) as r:
-            return r.read()
-    return with_retries(urllib.parse.urlparse(url).hostname or "VNDB", go)
-
-
-def vndb_query(filters, results=6):
-    body = {"filters": filters, "results": results,
-            "fields": "title, alttitle, released, image.url, image.dims, image.sexual, image.violence, "
-                      "screenshots.url, screenshots.dims, screenshots.sexual, screenshots.violence"}
-    if filters and filters[0] == "search":
-        body["sort"] = "searchrank"
-
-    def go():
-        with net_open("https://api.vndb.org/kana/vn", data=json.dumps(body).encode(),
-                      headers={"Content-Type": "application/json", "User-Agent": VNDB_UA},
-                      timeout=25, proxy=proxy_url(), method="POST") as r:
-            return json.loads(r.read()).get("results") or []
-    return with_retries("api.vndb.org", go)
-
-
-def proxy_test():
-    """Reachability of the VNDB hosts, directly and through the configured proxy."""
-    px = proxy_url()
-    checks = []
-    for host, url in (("api.vndb.org", "https://api.vndb.org/kana/schema"), ("t.vndb.org", "https://t.vndb.org/")):
-        for mode, p in [("напрямую", None)] + ([("через прокси", px)] if px else []):
-            t0 = time.time()
-            try:
-                with net_open(url, headers={"User-Agent": VNDB_UA}, timeout=12, proxy=p) as r:
-                    r.read(200)
-                checks.append({"host": host, "mode": mode, "ok": True, "ms": int((time.time() - t0) * 1000)})
-            except urllib.error.HTTPError as e:      # an HTTP answer still means we got through
-                checks.append({"host": host, "mode": mode, "ok": True, "ms": int((time.time() - t0) * 1000),
-                               "note": f"ответ HTTP {e.code}"})
-            except Exception as e:  # noqa: BLE001
-                checks.append({"host": host, "mode": mode, "ok": False, "error": net_reason(e)})
-    return {"proxy": px or "", "checks": checks}
-
-
-def vndb_search(q):
-    q = re.sub(r"\b(rus|eng|jpn?|ru|en|jp|russian|english|uncensored|patched|repack|final|full|remake|hd|dl|steam)\b", " ", q, flags=re.I)
-    q = re.sub(r"\s+", " ", q).strip()
-    return [{"id": v["id"], "title": v.get("title"), "alttitle": v.get("alttitle"), "released": v.get("released"),
-             "image": (v.get("image") or {}).get("url"), "sexual": (v.get("image") or {}).get("sexual", 0)}
-            for v in vndb_query(["search", "=", q])] if q else []
-
-
-def vndb_pick(name, vn_id=None):
-    """VNDB entry for a game: by id, or by name when the top hit matches the query well enough."""
-    if vn_id:
-        res = vndb_query(["id", "=", vn_id], 1)
-        if not res:
-            raise RuntimeError(f"VNDB: {vn_id} не найден")
-        return res[0]
-    q = re.sub(r"\b(rus|eng|jpn?|ru|en|jp|russian|english|uncensored|patched|repack|final|full|hd)\b", " ", name, flags=re.I)
-    q = re.sub(r"\s+", " ", q).strip()
-    if len(norm_title(q)) < 3:
-        return None
-    nq = norm_title(q)
-    for v in vndb_query(["search", "=", q], 5):
-        for t in (v.get("title") or "", v.get("alttitle") or ""):
-            nt = norm_title(t)
-            if nt and (nt == nq or (len(nq) >= 5 and (nq in nt or nt in nq))):
-                return v
-    return None
-
-
-def vndb_allowed(img):
-    limit = 3.0 if STATE.get("vndb_nsfw") else 1.4
-    return img and img.get("url") and float(img.get("sexual") or 0) <= limit and float(img.get("violence") or 0) <= limit
-
-
-def vndb_images(vn, have_icon):
-    """{slot: (bytes, ext)} from a VNDB entry, honoring the NSFW setting."""
-    imgs, notes = {}, []
-    cover = vn.get("image") or {}
-    shots = [s for s in (vn.get("screenshots") or []) if vndb_allowed(s)]
-    shots.sort(key=lambda s: -(s.get("dims") or [0, 0])[0])
-    cov = None
-    if vndb_allowed(cover):
-        cov = vndb_fetch(cover["url"])
-    elif cover.get("url"):
-        notes.append("обложка VNDB отфильтрована как NSFW")
-    shot = None
-    if shots:
-        shot = vndb_fetch(shots[0]["url"])
-    if FFMPEG:
-        if cov:
-            imgs["portrait"] = (ff_fit_blur(cov, "jpg", 600, 900), "jpg")
-        wide = shot or cov
-        if wide:
-            imgs["landscape"] = (ff_cover(wide, "jpg", 920, 430), "jpg")
-            imgs["hero"] = (ff_cover(wide, "jpg", 1920, 620), "jpg")
-        if cov and not have_icon:
-            imgs["icon"] = (ff_cover(cov, "jpg", 256, 256), "jpg")
-        try:
-            imgs["logo"] = (ff_logo(vn.get("title") or ""), "png")
-        except RuntimeError as e:
-            notes.append(f"логотип: {e}")
-    else:
-        if cov:
-            imgs["portrait"] = (cov, "jpg")
-        if shot:
-            imgs["landscape"] = (shot, "jpg")
-            imgs["hero"] = (shot, "jpg")
-        notes.append("без ffmpeg картинки VNDB поставлены как есть")
-    return imgs, notes
-
-
-def art_userdata(exe):
-    sc = shortcuts_index().get(str(exe))
-    return Path(sc["userdata"]) if sc else pick_userdata()
-
-
-def art_files(appid, ud):
-    """{slot: path} of the cover files currently in userdata/<id>/config/grid (newest per slot)."""
-    grid = ud / "config" / "grid"
-    out = {}
-    if not grid.is_dir():
-        return out
-    for slot, suf in GRID_SUFFIX.items():
-        cands = [f for f in grid.glob(f"{appid}{suf}.*") if f.suffix.lower() in (".png", ".jpg", ".jpeg")]
-        if cands:
-            out[slot] = max(cands, key=lambda f: f.stat().st_mtime)
-    return out
-
-
-def art_file_for(appid, slot):
-    for ud in userdata_dirs():
-        f = art_files(appid, ud).get(slot)
-        if f:
-            return f
-    return None
-
-
-def apply_artwork(appid, ud, images):
-    """Write covers into userdata/<id>/config/grid (what Steam reads on start / what the UI previews)
-    and, when Steam control is live, push them to the running client as well."""
-    ud = ud or pick_userdata()
-    grid = ud / "config" / "grid"
-    grid.mkdir(parents=True, exist_ok=True)
-    for slot, (data, ext) in images.items():
-        for old in grid.glob(f"{appid}{GRID_SUFFIX[slot]}.*"):
-            if old.suffix.lower() in (".png", ".jpg", ".jpeg"):
-                old.unlink()
-        (grid / f"{appid}{GRID_SUFFIX[slot]}.{ext}").write_bytes(data)
-    if not CDP.available():
-        return "files"
-    for slot, (data, ext) in images.items():
-        if slot in ASSET_TYPE:
-            CDP.set_artwork(appid, data, ext, ASSET_TYPE[slot])
-    if "icon" in images:
-        try:
-            CDP.set_icon(appid, grid / f"{appid}_icon.{images['icon'][1]}")
-        except Exception as e:  # noqa: BLE001
-            log(f"set icon: {e}")
-    return "live"
-
-
-def art_current(game_dir, exe):
-    """Cover slots of an added game with URLs for preview."""
-    p = game_exe_path(game_dir, exe)
-    appid = resolve_appid(p)
-    if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
-    files = art_files(appid, art_userdata(p))
-    rec = added_rec(str(p))
-    slots = {}
-    for slot in GRID_SUFFIX:
-        f = files.get(slot)
-        # nanosecond mtime: two replacements in the same second must still bust the browser cache
-        slots[slot] = ({"url": f"/art/{appid}/{slot}?v={f.stat().st_mtime_ns}", "size": f.stat().st_size,
-                        "ext": f.suffix.lstrip(".").lower()} if f else None)
-    return {"appid": appid, "source": rec.get("art_source"), "vndb_title": rec.get("vndb_title"),
-            "note": rec.get("art_note"), "error": rec.get("art_error"), "live": CDP.available(), "slots": slots}
-
-
-def vndb_image_list(vn_id):
-    """Cover + screenshots of one VN, for picking a single slot image by hand."""
-    res = vndb_query(["id", "=", vn_id], 1)
-    if not res:
-        raise RuntimeError(f"VNDB: {vn_id} не найден")
-    v = res[0]
-    out = []
-    cover = v.get("image") or {}
-    if vndb_allowed(cover):
-        out.append({"kind": "cover", "url": cover["url"], "dims": cover.get("dims")})
-    for shot in v.get("screenshots") or []:
-        if vndb_allowed(shot):
-            out.append({"kind": "screenshot", "url": shot["url"], "dims": shot.get("dims")})
-    return {"id": v["id"], "title": v.get("title"), "images": out}
-
-
-def art_from_url(game_dir, exe, slot, url, vn_id=None):
-    """Put one VNDB image into one cover slot, fitted/cropped for that slot when ffmpeg is around."""
-    if slot not in GRID_SUFFIX:
-        raise ValueError("неизвестный слот обложки")
+def _via_socks(url, data, headers, timeout, method, px):
     u = urllib.parse.urlparse(url)
-    if u.scheme != "https" or not (u.netloc == "vndb.org" or u.netloc.endswith(".vndb.org")):
-        raise ValueError("картинки можно брать только с vndb.org")
-    p = game_exe_path(game_dir, exe)
-    appid = resolve_appid(p)
-    if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
-    data = vndb_fetch(url)
-    ext = "png" if data[:8] == PNG_SIG else "jpg"
-    if FFMPEG:
-        try:
-            if slot == "portrait":
-                data, ext = ff_fit_blur(data, ext, 600, 900), "jpg"
-            elif slot == "landscape":
-                data, ext = ff_cover(data, ext, 920, 430), "jpg"
-            elif slot == "hero":
-                data, ext = ff_cover(data, ext, 1920, 620), "jpg"
-            elif slot == "icon":
-                data, ext = ff_cover(data, ext, 256, 256), "jpg"
-        except RuntimeError as e:
-            log(f"ffmpeg for {slot} failed, using the image as is: {e}")
-    how = apply_artwork(appid, art_userdata(p), {slot: (data, ext)})
-    kv = {"art": True, "art_error": None, "art_source": "vndb"}
-    if vn_id:
-        kv["vndb_id"] = vn_id
-    update_added(str(p), **kv)
-    return {"slot": slot, "how": how}
+    port = u.port or (443 if u.scheme == "https" else 80)
+    sock = socks5_connect(px, u.hostname, port, timeout)
+    if u.scheme == "https":
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=u.hostname)
+    conn = http.client.HTTPConnection(u.hostname, port, timeout=timeout)
+    conn.sock = sock
+    path = (u.path or "/") + (("?" + u.query) if u.query else "")
+    conn.request(method or ("POST" if data else "GET"), path, body=data, headers=headers)
+    return conn.getresponse()
 
 
-def art_from_exe(game_dir, exe, slot):
-    """Fill one cover slot from the icon inside the executable (or an .ico next to it)."""
-    if slot not in GRID_SUFFIX:
-        raise ValueError("неизвестный слот обложки")
-    p = game_exe_path(game_dir, exe)
-    appid = resolve_appid(p)
-    if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
-    icon = load_icon(p)
-    if not icon:
-        raise RuntimeError(f"в {p.name} нет иконки, и рядом не нашлось .ico или icon.png")
-    if slot in SIZES:
-        w, h = SIZES[slot]
-        data = capsule_png(icon, w, h, 0.6 if slot == "portrait" else 0.5)
-    else:                      # icon and logo keep the transparent original
-        data = png_encode(*icon)
-    how = apply_artwork(appid, art_userdata(p), {slot: (data, "png")})
-    update_added(str(p), art=True, art_error=None)
-    return {"slot": slot, "how": how, "size": f"{icon[0]}x{icon[1]}"}
-
-
-def custom_art(game_dir, exe, slot, data):
-    """Replace one cover slot with an image uploaded by the user (PNG or JPEG)."""
-    if slot not in GRID_SUFFIX:
-        raise ValueError("неизвестный слот обложки")
-    if data[:8] == PNG_SIG:
-        ext = "png"
-    elif data[:3] == b"\xff\xd8\xff":
-        ext = "jpg"
-    else:
-        raise ValueError("нужен PNG или JPEG")
-    if len(data) > 25 << 20:
-        raise ValueError("файл больше 25 МБ")
-    p = game_exe_path(game_dir, exe)
-    appid = resolve_appid(p)
-    if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
-    how = apply_artwork(appid, art_userdata(p), {slot: (data, ext)})
-    update_added(str(p), art=True, art_error=None, art_source="custom")
-    return {"slot": slot, "how": how}
-
-
-ART_BUSY = set()
-
-
-def art_worker(exe, force, wait_for_shortcut, source="auto", vn_id=None):
-    if exe in ART_BUSY:
-        return
-    ART_BUSY.add(exe)
-    try:
-        note = ensure_art(exe, force, wait_for_shortcut, source, vn_id)
-        log(f"art for {Path(exe).name}: {note}")
-    except Exception as e:  # noqa: BLE001
-        log(f"art for {Path(exe).name} failed: {e}")
-        update_added(exe, art=False, art_error=str(e))
-    finally:
-        ART_BUSY.discard(exe)
-
-
-def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=None):
-    """Build and apply the full cover set (portrait, landscape, hero, logo, icon) for a shortcut."""
-    p = Path(exe)
-    rec = added_rec(str(p))
-    if rec.get("art") and not force and source == "auto":
-        return "обложка уже есть"
-    appid = resolve_appid(p, wait=20 if wait_for_shortcut else 0)
-    sc = shortcuts_index().get(str(p))
-    ud = Path(sc["userdata"]) if sc else None
-    if not appid:
-        appid = shortcut_appid(f'"{p}"', p.stem)
-        log(f"shortcut for {p.name} not in shortcuts.vdf yet; using computed appid {appid}")
-    images, info, notes = {}, {"art_source": "icon", "vndb_id": None, "vndb_title": None}, []
-    icon = load_icon(p)
-    if source == "vndb" or (source == "auto" and STATE.get("vndb_auto", True)):
-        try:
-            query = rec.get("name") or (clean_title(sc["name"]) if sc and sc.get("name") else "") or pretty_name(p, p.parent)
-            vn = vndb_pick(clean_title(query) or query, vn_id)
-            if vn:
-                vimgs, vnotes = vndb_images(vn, bool(icon))
-                notes += vnotes
-                if vimgs:
-                    images.update(vimgs)
-                    info = {"art_source": "vndb", "vndb_id": vn["id"], "vndb_title": vn.get("title")}
-            else:
-                notes.append("VNDB: подходящей новеллы не нашёл")
-        except Exception as e:  # noqa: BLE001
-            notes.append(f"VNDB: {str(e)[:120]}")
-            log(f"vndb for {p.name}: {e}")
-    if icon:
-        if "icon" not in images:
-            images["icon"] = (png_encode(*icon), "png")
-        for slot, (w, h) in SIZES.items():
-            if slot not in images:
-                images[slot] = (capsule_png(icon, w, h, 0.6 if slot == "portrait" else 0.5), "png")
-    if not images:
-        raise RuntimeError("иконка не найдена ни в exe, ни в папке игры, и VNDB не помог")
-    how = apply_artwork(appid, ud, images)
-    update_added(str(p), art=True, appid=appid, art_error=None, art_note="; ".join(notes) or None, **info)
-    return f"{info['art_source']} -> {', '.join(sorted(images))} ({how})" + (f"; {'; '.join(notes)}" if notes else "")
-
-# --------------------------------------------------------------------------- games list / hide / delete
-
-def find_exes(d):
-    exes = []
-    for pattern in ("*.exe", "*/*.exe", "*.sh", "*/*.sh", "*.x86_64", "*/*.x86_64"):
-        for p in d.glob(pattern):
-            if not SKIP_EXE.search(p.name):
-                exes.append(p.relative_to(d).as_posix())
-    return sorted(set(exes))[:25]
-
-
-def recommend(exes):
-    linux = [e for e in exes if is_linux_exe(e)]
-    win = [e for e in exes if not is_linux_exe(e)]
-    pool = (linux or win) if STATE.get("prefer_linux", True) else (win or linux)
-    return min(pool, key=lambda e: (e.count("/"), len(e))) if pool else None
-
-
-def game_dirs():
-    """(dir, imported) for every card on the Игры tab: folders inside the roots, plus imported games."""
-    out = []
-    for root in game_roots():
-        if not root.is_dir():
-            continue
-        try:
-            kids = sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            continue
-        out += [(d, False) for d in kids if d.is_dir() and not d.name.startswith((".", "_"))]
-    out += [(d, True) for d in imported_dirs()]
-    return out
-
-
-def list_games():
-    out = []
-    try:
-        idx = shortcuts_index()
-    except Exception as e:  # noqa: BLE001
-        log(f"shortcuts index failed: {e}")
-        idx = {}
-    with STATE_LOCK:
-        added = dict(STATE.get("added", {}))
-        hidden = set(STATE.get("hidden", []))
-        pending = STATE.get("pending") or []
-    pending_exes = {op.get("exe") for op in pending}
-    if True:
-        for d, is_imported in game_dirs():
-            disk = disk_label_for(d)
-            rels = find_exes(d)
-            rec_exe = recommend(rels)
-            steam_names = [idx[str((d / r).resolve())]["name"] for r in rels if str((d / r).resolve()) in idx]
-            names = name_candidates(d, rels, steam_names)
-            exes = []
-            for rel in rels:
-                full = str((d / rel).resolve())
-                sc = idx.get(full)
-                rec = added.get(full, {})
-                appid = (sc or {}).get("appid") or rec.get("appid")
-                compat_info = compat_for(appid, rec)
-                exes.append({"exe": rel, "linux": is_linux_exe(rel), "recommended": rel == rec_exe,
-                             "in_steam": bool(sc) or bool(rec.get("appid") or rec.get("via")),
-                             "name": (sc or {}).get("name") or rec.get("name") or pretty_name(rel, d),
-                             "clean_name": clean_title((sc or {}).get("name") or rec.get("name") or "") or pretty_name(rel, d),
-                             "art": bool(rec.get("art")), "art_error": rec.get("art_error"),
-                             "art_source": rec.get("art_source"), "vndb_title": rec.get("vndb_title"),
-                             "art_note": rec.get("art_note"),
-                             "compat": compat_info[0], "compat_from": compat_info[1],
-                             "pending": full in pending_exes,
-                             "appid": appid})
-            chosen = [x for x in exes if x["in_steam"]]
-            title = chosen[0]["name"] if chosen else (names[0] if names else d.name)
-            out.append({"name": d.name, "title": title, "names": names, "path": str(d), "disk": disk,
-                        "exes": exes, "hidden": str(d) in hidden, "imported": is_imported})
-    return out
-
-
-# an exe often sits in a subfolder; the game folder is the one above it
-NESTED_DIRS = {"bin", "bin64", "binaries", "game", "x64", "x86", "win", "win32", "win64",
-               "windows", "data", "app", "runtime", "release"}
-
-
-def adopt_steam_settings(d):
-    """Copy what Steam already knows about the games in this folder into DeckDrop's own record.
-
-    Reads shortcuts.vdf, config.vdf and the grid folder; writes only DeckDrop's state file.
-    """
-    try:
-        idx = shortcuts_index()
-        ctmap = compat_mapping()
-    except Exception as e:  # noqa: BLE001
-        log(f"adopt: {e}")
-        return []
-    adopted = []
-    for rel in find_exes(d):
-        full = str((d / rel).resolve())
-        sc = idx.get(full)
-        if not sc:
-            continue
-        appid = sc["appid"]
-        kv = {"appid": appid, "via": "steam"}
-        name = clean_title(sc.get("name") or "") or strip_exe_ext(sc.get("name") or "")
-        if name:
-            kv["name"] = name
-        if appid in ctmap:
-            kv["compat"] = ctmap[appid] or None
-        try:
-            covers = sorted(art_files(appid, Path(sc["userdata"])))
-        except OSError:
-            covers = []
-        if covers:
-            kv.update(art=True, art_source="steam", art_note="обложки взяты из Steam")
-        update_added(full, **kv)
-        adopted.append({"exe": rel, "name": kv.get("name"), "compat": kv.get("compat"),
-                        "covers": covers, "appid": appid})
-    return adopted
-
-
-def import_game(path):
-    """Add one game that already lives somewhere on the Deck.
-
-    Nothing is copied, moved or installed: the folder stays where it is and simply becomes a card.
-    """
-    raw = (path or "").strip().strip('"').strip("'")
-    if not raw:
-        raise ValueError("укажи путь к файлу запуска игры")
-    p = Path(raw).expanduser()
-    if not p.is_absolute():
-        raise ValueError("нужен полный путь, начиная с /")
-    try:
-        p = p.resolve()
-    except OSError as e:
-        raise ValueError(f"не смог разобрать путь: {e}") from e
-    if not p.exists():
-        raise ValueError(f"по этому пути ничего нет: {p}")
-    if not import_allowed(p):
-        raise ValueError("добавлять можно только из домашней папки или с подключённых носителей")
-    d = p if p.is_dir() else p.parent
-    if not p.is_dir() and d.name.lower() in NESTED_DIRS and d.parent != d and import_allowed(d.parent):
-        d = d.parent                      # .../Fate/bin/Fate.exe -> the game folder is .../Fate
-    if any(r.resolve() == d or inside(r, d) for r in game_roots() if r.exists()):
-        raise ValueError("эта игра и так внутри папки игр DeckDrop, она уже есть в списке")
-    if d in imported_dirs():
-        raise ValueError("эта игра уже добавлена")
-    exes = find_exes(d)
-    if not exes:
-        raise ValueError(f"в папке {d.name} не нашёл ни одного exe, sh или x86_64. "
-                         "Укажи путь к самому файлу запуска")
-    with STATE_LOCK:
-        STATE["imported"] = sorted({*(STATE.get("imported") or []), str(d)})
-        save_state()
-    adopted = adopt_steam_settings(d)
-    log(f"imported game {d} ({len(exes)} executables, {len(adopted)} already in Steam)")
-    return {"path": str(d), "name": d.name, "exes": exes, "disk": disk_label_for(d), "adopted": adopted}
-
-
-def unimport_game(path):
-    """Stop showing an imported game. The folder itself is left untouched."""
-    p = Path(path).resolve()
-    with STATE_LOCK:
-        cur = list(STATE.get("imported") or [])
-        keep = [x for x in cur if Path(x).resolve() != p]
-        if len(keep) == len(cur):
-            raise ValueError("эта игра не из добавленных вручную")
-        STATE["imported"] = keep
-        STATE["hidden"] = [h for h in STATE.get("hidden", []) if Path(h).resolve() != p]
-        STATE["added"] = {k: v for k, v in STATE.get("added", {}).items() if not inside(p, k)}
-        STATE["pending"] = [o for o in STATE.get("pending") or [] if not inside(p, o.get("exe", ""))]
-        save_state()
-    return p.name
-
-
-def import_candidates():
-    """Non-Steam shortcuts pointing outside DeckDrop's folders: one tap to show them here too."""
-    out, seen = [], set()
-    try:
-        idx = shortcuts_index()
-    except Exception as e:  # noqa: BLE001
-        log(f"import scan: {e}")
-        return out
-    imported = imported_dirs()
-    for exe, sc in idx.items():
-        if not exe or not Path(exe).is_absolute():
-            continue
-        p = Path(exe)
-        d = p.parent
-        if str(d) in seen or any(inside(r, p) for r in game_roots() if r.exists()):
-            continue
-        if d in imported or not import_allowed(d):
-            continue
-        seen.add(str(d))
-        out.append({"exe": exe, "dir": str(d), "name": sc.get("name"), "appid": sc.get("appid"),
-                    "exists": p.exists(), "disk": disk_label_for(d)})
-    out.sort(key=lambda c: (not c["exists"], (c["name"] or "").lower()))
-    return out
-
-
-def game_dir_path(path):
-    p = Path(path).resolve()
-    if p in imported_dirs():
-        return p
-    if not inside_any(p) or p.name.startswith("_") or not p.is_dir() or any(p == r.resolve() for r in game_roots()):
-        raise ValueError("неверный путь")
-    return p
-
-
-def game_info(path):
-    p = game_dir_path(path)
-    size, files = dir_size(p)
-    return {"size": size, "files": files, "mtime": int(p.stat().st_mtime)}
-
-
-def set_hidden(path, hidden):
-    p = str(game_dir_path(path))
-    with STATE_LOCK:
-        h = set(STATE.get("hidden", []))
-        (h.add if hidden else h.discard)(p)
-        STATE["hidden"] = sorted(h)
-        save_state()
-
-
-def delete_game(path, remove_shortcut=False):
-    p = game_dir_path(path)
-    removed, notes = [p.name], []
-    if remove_shortcut:
-        with STATE_LOCK:
-            recs = {k: v for k, v in STATE.get("added", {}).items() if inside(p, k)}
-        idx = shortcuts_index()
-        appids = {v.get("appid") for v in recs.values() if v.get("appid")}
-        appids |= {v["appid"] for k, v in idx.items() if inside(p, k)}
-        if appids and CDP.available():
-            for appid in appids:
-                try:
-                    CDP.remove_shortcut(appid)
-                    notes.append(f"ярлык {appid} убран из Steam")
-                except Exception as e:  # noqa: BLE001
-                    notes.append(f"ярлык {appid}: {e}")
-        elif appids:
-            notes.append("ярлык в Steam остался: управление Steam недоступно")
-    shutil.rmtree(p)
-    inbox = p.parent / "_inbox"
-    if inbox.is_dir():
-        for f in inbox.iterdir():
-            if f.is_file() and split_ext(f.name)[0] == p.name:
-                f.unlink()
-                removed.append(f.name)
-    with STATE_LOCK:
-        STATE["hidden"] = [h for h in STATE.get("hidden", []) if h != str(p)]
-        STATE["imported"] = [x for x in STATE.get("imported") or [] if Path(x).resolve() != p]
-        STATE["added"] = {k: v for k, v in STATE.get("added", {}).items() if not inside(p, k)}
-        STATE["pending"] = [o for o in STATE.get("pending") or [] if not inside(p, o.get("exe", ""))]
-        save_state()
-    return removed, notes
-
-# --------------------------------------------------------------------------- save games: backup / import
-
-SAVE_DIR_RE = re.compile(r"^(save|saves|savedata|save_data|savegame|savegames|sav|userdata|profile|profiles)$", re.I)
-PREFIX_SUBDIRS = ("AppData/Roaming", "AppData/Local", "AppData/LocalLow", "Documents", "Saved Games")
-PREFIX_SKIP = {"microsoft", "temp", "crashdumps", "packages", "d3dscache", "nvidia", "steam", "programs",
-               "connecteddevicesplatform", "comms", "placeholdertilelogofolder", "publishers", "google", "mozilla"}
-
-
-def dir_size(path):
-    total, files = 0, 0
-    for f in Path(path).rglob("*"):
-        if f.is_file():
-            try:
-                total += f.stat().st_size
-                files += 1
-            except OSError:
-                pass
-    return total, files
-
-
-def save_sources(game_dir, exe):
-    """[(group, base, path)] - dirs to back up; archive paths are group/<rel to base>."""
-    g = Path(game_dir)
-    p = g / exe
-    srcs = []
-
-    def walk(d, depth):
-        for c in d.iterdir():
-            if not c.is_dir():
+def net_open(url, data=None, headers=None, timeout=60, proxy=None, method=None, redirects=3):
+    """Open a URL directly or through DeckDrop's own proxy (socks5:// or http://)."""
+    h = {"User-Agent": UA}
+    h.update(headers or {})
+    px = urllib.parse.urlparse(proxy) if proxy else None
+    if px and px.scheme in ("socks5", "socks5h", "socks"):
+        for _ in range(redirects + 1):
+            raw = _via_socks(url, data, h, timeout, method, px)
+            loc = raw.headers.get("Location")
+            if raw.status in (301, 302, 303, 307, 308) and loc:
+                raw.read()
+                raw.close()
+                url = urllib.parse.urljoin(url, loc)
                 continue
-            if SAVE_DIR_RE.match(c.name):
-                srcs.append(("game", g, c))
-            elif depth < 3:
-                walk(c, depth + 1)
-
-    walk(g, 0)
-    appid = resolve_appid(p)
-    if appid and not is_linux_exe(p):
-        user = compatdata_dir(appid) / "pfx" / "drive_c" / "users" / "steamuser"
-        for sub in PREFIX_SUBDIRS:
-            base = user / sub
-            if base.is_dir():
-                for c in base.iterdir():
-                    if c.is_dir() and c.name.lower() not in PREFIX_SKIP and not c.name.startswith("."):
-                        srcs.append(("prefix", user, c))
-    if is_linux_exe(p):
-        token = norm_title(pretty_name(p, g))[:6]
-        for base in (Path.home() / ".renpy", Path.home() / ".config" / "unity3d"):
-            if base.is_dir():
-                for c in base.rglob("*"):
-                    if c.is_dir() and len(c.relative_to(base).parts) <= 2 and token and token in norm_title(c.name):
-                        srcs.append(("home", Path.home(), c))
-    return srcs, appid
+            if raw.status >= 400:
+                raw.read(400)
+                raw.close()
+                raise urllib.error.HTTPError(url, raw.status, raw.reason, raw.headers, None)
+            return Resp(raw, url)
+        raise RuntimeError("слишком много перенаправлений")
+    handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy} if px else {})
+    opener = urllib.request.build_opener(handler)
+    raw = opener.open(urllib.request.Request(url, data=data, headers=h, method=method), timeout=timeout)
+    return Resp(raw, raw.geturl())
 
 
-def saves_info(game_dir, exe):
-    p = game_exe_path(game_dir, exe)
-    srcs, appid = save_sources(Path(game_dir), p.name if p.parent == Path(game_dir).resolve() else str(p.relative_to(Path(game_dir).resolve())))
-    out = []
-    for group, base, path in srcs:
-        size, files = dir_size(path)
-        out.append({"group": group, "path": str(path), "size": size, "files": files})
-    return {"appid": appid, "sources": out, "total": sum(s["size"] for s in out),
-            "prefix": str(compatdata_dir(appid)) if appid else None}
+def http_get(url, timeout=60, headers=None, proxy=None):
+    return net_open(url, headers=headers, timeout=timeout, proxy=proxy)
 
 
-def build_saves_zip(game_dir, exe):
-    p = game_exe_path(game_dir, exe)
-    g = Path(game_dir).resolve()
-    rel = str(p.relative_to(g))
-    srcs, appid = save_sources(g, rel)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    out = CACHE_DIR / f"saves_{re.sub(r'[^A-Za-z0-9_-]+', '_', g.name)}_{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(2)}.zip"
-    manifest = {"deckdrop": __version__, "game": g.name, "exe": rel, "appid": appid,
-                "created": int(time.time()), "groups": [], "files": 0}
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        for group, base, path in srcs:
-            manifest["groups"].append({"group": group, "path": str(path.relative_to(base))})
-            for f in path.rglob("*"):
-                if f.is_file():
-                    z.write(f, f"{group}/{f.relative_to(base).as_posix()}")
-                    manifest["files"] += 1
-        z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
-    return out, manifest
-
-
-def import_saves_zip(game_dir, exe, zip_path):
-    p = game_exe_path(game_dir, exe)
-    g = Path(game_dir).resolve()
-    appid = resolve_appid(p)
-    targets = {"game": g, "home": Path.home()}
-    if appid:
-        targets["prefix"] = compatdata_dir(appid) / "pfx" / "drive_c" / "users" / "steamuser"
-    backup, _ = build_saves_zip(game_dir, str(p.relative_to(g)))   # safety copy of what is there now
-    written, skipped = 0, 0
-    with zipfile.ZipFile(zip_path) as z:
+def with_retries(what, fn, tries=3, delay=1.5):
+    """Retry a network call; connection resets from DPI are often intermittent."""
+    last = None
+    for i in range(tries):
         try:
-            manifest = json.loads(z.read("manifest.json"))
-        except KeyError:
-            raise ValueError("это не бэкап сейвов DeckDrop (нет manifest.json)") from None
-        for info in z.infolist():
-            if info.is_dir() or info.filename == "manifest.json":
-                continue
-            group, _, rel = info.filename.partition("/")
-            base = targets.get(group)
-            if not base or not rel:
-                skipped += 1
-                continue
-            dest = (base / rel).resolve()
-            if base.resolve() not in dest.parents:
-                skipped += 1
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with z.open(info) as src, open(dest, "wb") as dst:
-                shutil.copyfileobj(src, dst, CHUNK)
-            written += 1
-    return {"written": written, "skipped": skipped, "from_game": manifest.get("game"),
-            "backup_of_previous": backup.name, "prefix_missing": "prefix" not in targets}
-
-# --------------------------------------------------------------------------- media gallery
-
-_MEDIA = {"at": 0, "items": [], "by_id": {}}
-_APP_NAMES = {}
+            return fn()
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, OSError, ConnectionError, TimeoutError, ssl.SSLError) as e:
+            last = e
+            if i + 1 < tries:
+                time.sleep(delay * (i + 1))
+    raise RuntimeError(f"{what}: {net_reason(last)}") from last
 
 
-def app_name(appid):
-    if appid in _APP_NAMES:
-        return _APP_NAMES[appid]
-    name = None
-    for lib in library_folders():
-        acf = lib / "steamapps" / f"appmanifest_{appid}.acf"
-        if acf.is_file():
-            m = re.search(r'"name"\s+"([^"]*)"', acf.read_text("utf-8", "replace"))
-            name = m.group(1) if m else None
-            break
-    if not name and appid.isdigit():
-        shortcuts_index()
-        rec = _SC_CACHE["by_appid"].get(int(appid))
-        name = rec["name"] if rec else None
-    _APP_NAMES[appid] = name or f"app {appid}"
-    return _APP_NAMES[appid]
+def resolve_url(url):
+    """Turn share links of known hosts into direct download links (best effort)."""
+    u = urllib.parse.urlparse(url)
+    host = u.netloc.lower()
+    if "disk.yandex" in host or host.endswith("yadi.sk"):
+        api = ("https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key="
+               + urllib.parse.quote(url, safe=""))
+        with http_get(api, 30, proxy=dl_proxy()) as r:
+            return json.load(r)["href"]
+    if "drive.google.com" in host or "docs.google.com" in host:
+        m = re.search(r"/d/([\w-]+)", u.path) or re.search(r"[?&]id=([\w-]+)", url)
+        if m:
+            return ("https://drive.usercontent.google.com/download?id="
+                    + m.group(1) + "&export=download&confirm=t")
+    return url
+'''),
+    'deckdrop.patches': (False, 'deckdrop/patches.py', r'''"""Files inside a game: browse, upload, unpack a patch archive over the game."""
 
+import os
+import re
+import secrets
+import shutil
+import threading
+import time
+from pathlib import Path
 
-def media_id(path):
-    return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:16]
+from .archives import NeedsPassword, try_extract
+from .config import CACHE_DIR, log
+from .detect import game_exe_path
+from .games import game_dirs
+from .paths import archive_ext, safe_name
+from .state import STATE, STATE_LOCK, save_state
+from .storage import inside
 
-
-def clip_time(name, fallback):
-    m = re.search(r"_(\d{8})_(\d{6})", name)
-    if m:
-        try:
-            return int(time.mktime(time.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")))
-        except ValueError:
-            pass
-    return int(fallback)
-
-
-def scan_media(force=False):
-    if not force and time.time() - _MEDIA["at"] < 10:
-        return _MEDIA["items"]
-    items = []
-    for ud in userdata_dirs():
-        remote = ud / "760" / "remote"
-        if remote.is_dir():
-            for appdir in remote.iterdir():
-                shots = appdir / "screenshots"
-                if not shots.is_dir():
-                    continue
-                game = app_name(appdir.name)
-                for f in shots.iterdir():
-                    if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                        thumb = shots / "thumbnails" / f.name
-                        st = f.stat()
-                        items.append({"kind": "image", "path": f, "thumb": thumb if thumb.is_file() else None,
-                                      "name": f.name, "game": game, "time": int(st.st_mtime), "size": st.st_size})
-        for sub, label in (("clips", "клип"), ("video", "запись")):
-            base = ud / "gamerecordings" / sub
-            if not base.is_dir():
-                continue
-            for clip in base.iterdir():
-                if not clip.is_dir():
-                    continue
-                m = re.match(r"(?:clip|bg)_(\d+)_", clip.name)
-                game = app_name(m.group(1)) if m else clip.name
-                thumb = clip / "thumbnail.jpg"
-                size = sum(f.stat().st_size for f in clip.rglob("*.m4s"))
-                items.append({"kind": "clip", "path": clip, "thumb": thumb if thumb.is_file() else None,
-                              "name": f"{label} {clip.name}", "game": game,
-                              "time": clip_time(clip.name, clip.stat().st_mtime), "size": size})
-    for d in MEDIA_DIRS:
-        if not d.is_dir():
-            continue
-        for f in d.rglob("*"):
-            if len(f.relative_to(d).parts) > 3 or not f.is_file():
-                continue
-            ext = f.suffix.lower()
-            if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
-                st = f.stat()
-                items.append({"kind": "image" if ext in IMAGE_EXTS else "video", "path": f, "thumb": None,
-                              "name": f.name, "game": f.parent.name if f.parent != d else d.name,
-                              "time": int(st.st_mtime), "size": st.st_size})
-    items.sort(key=lambda i: i["time"], reverse=True)
-    for it in items:
-        it["id"] = media_id(it["path"])
-    _MEDIA.update(at=time.time(), items=items, by_id={i["id"]: i for i in items})
-    return items
-
-
-def media_item(mid):
-    it = _MEDIA["by_id"].get(mid)
-    if it is None:
-        scan_media(force=True)
-        it = _MEDIA["by_id"].get(mid)
-    if it is None:
-        raise FileNotFoundError(mid)
-    return it
-
-
-def _concat(files, out):
-    with open(out, "wb") as dst:
-        for f in files:
-            with open(f, "rb") as src:
-                shutil.copyfileobj(src, dst, CHUNK)
-
-
-def clip_mp4(item):
-    """Assemble a Steam recording (fragmented m4s chunks) into one mp4, cached."""
-    clip = item["path"]
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    out = CACHE_DIR / f"{item['id']}.mp4"
-    if out.is_file() and out.stat().st_mtime >= clip.stat().st_mtime and out.stat().st_size > 0:
-        return out
-    inits = sorted(clip.rglob("init-stream0.m4s"))
-    if not inits:
-        raise FileNotFoundError("в клипе нет фрагментов видео")
-    vdir = inits[0].parent
-
-    def stream(n):
-        init = vdir / f"init-stream{n}.m4s"
-        chunks = sorted(vdir.glob(f"chunk-stream{n}-*.m4s"),
-                        key=lambda p: int(re.findall(r"(\d+)\.m4s$", p.name)[0]))
-        return [init] + chunks if init.is_file() and chunks else None
-
-    video, audio = stream(0), stream(1)
-    if not video:
-        raise FileNotFoundError("в клипе нет фрагментов видео")
-    tmp_v = out.with_suffix(".v.mp4")
-    _concat(video, tmp_v)
-    if audio and FFMPEG:
-        tmp_a = out.with_suffix(".a.mp4")
-        _concat(audio, tmp_a)
-        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", str(tmp_v), "-i", str(tmp_a),
-                              "-c", "copy", "-movflags", "+faststart", str(out)],
-                             capture_output=True, text=True, errors="replace", timeout=600)
-        tmp_a.unlink(missing_ok=True)
-        if res.returncode == 0:
-            tmp_v.unlink(missing_ok=True)
-            return out
-        log(f"ffmpeg mux failed, serving video only: {res.stderr.strip()[-200:]}")
-    os.replace(tmp_v, out)
-    return out
-
-
-PLACEHOLDER_SVG = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90">'
-                   b'<rect width="160" height="90" fill="#2a475e"/>'
-                   b'<polygon points="65,28 65,62 98,45" fill="#66c0f4"/></svg>')
-
-
-def media_thumb(item):
-    """Path to a thumbnail (Steam's, cached ffmpeg frame, or the image itself); None -> placeholder."""
-    if item["thumb"]:
-        return item["thumb"]
-    if item["kind"] == "image":
-        return item["path"]
-    if FFMPEG:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        th = CACHE_DIR / f"{item['id']}_thumb.jpg"
-        if th.is_file():
-            return th
-        src = clip_mp4(item) if item["kind"] == "clip" else item["path"]
-        res = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-ss", "1", "-i", str(src),
-                              "-frames:v", "1", "-vf", "scale=320:-2", str(th)],
-                             capture_output=True, text=True, errors="replace", timeout=120)
-        if res.returncode == 0 and th.is_file():
-            return th
-    return None
-
-
-def media_delete(mid):
-    item = media_item(mid)
-    p = item["path"]
-    if item["kind"] == "clip":
-        shutil.rmtree(p)
-    else:
-        p.unlink()
-        if item["thumb"] and item["thumb"].is_file():
-            item["thumb"].unlink()
-    for f in CACHE_DIR.glob(f"{mid}*"):
-        try:
-            f.unlink()
-        except OSError:
-            pass
-    scan_media(force=True)
-    return item["name"]
-
-# --------------------------------------------------------------------------- self update
-
-def self_update(url):
-    script = Path(__file__).resolve()
-    try:
-        with http_get(url, 30) as r:
-            data = r.read()
-    except (urllib.error.URLError, OSError) as e:
-        raise RuntimeError(f"не удалось скачать {url}: {e}. Запущена ли раздача на ПК?") from e
-    if b"DeckDrop" not in data[:3000]:
-        raise RuntimeError("по ссылке лежит не deckdrop.py")
-    m = re.search(rb'__version__\s*=\s*"([^"]+)"', data)
-    ver = m.group(1).decode() if m else "?"
-    m = re.search(rb'DECKDROP_PORT",\s*"(\d+)"', data)
-    new_port = int(m.group(1)) if m else PORT
-    if data == script.read_bytes():
-        return f"уже стоит актуальная версия {ver}", new_port
-    new = script.with_suffix(".py.new")
-    new.write_bytes(data)
-    res = subprocess.run([sys.executable, "-m", "py_compile", str(new)], capture_output=True, text=True)
-    if res.returncode != 0:
-        new.unlink(missing_ok=True)
-        raise RuntimeError("новая версия не компилируется: " + res.stderr.strip()[-300:])
-    shutil.copy2(script, script.with_suffix(".py.bak"))
-    os.replace(new, script)
-    try:
-        script.chmod(0o755)
-    except OSError:
-        pass
-    if os.environ.get("DECKDROP_NO_RESTART") != "1":
-        threading.Timer(1.0, restart_self).start()
-    return f"обновлено {__version__} -> {ver}, перезапускаюсь", new_port
-
-
-def restart_self():
-    log("restarting")
-    if os.environ.get("INVOCATION_ID") and shutil.which("systemctl"):
-        subprocess.Popen(["systemctl", "--user", "restart", "deckdrop.service"])
-        return
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-# --------------------------------------------------------------------------- files inside a game (patches)
 
 UPLOAD_TMP = ".deckdrop-upload-"
 
@@ -3969,7 +3161,6 @@ def game_file_upload(game_dir, exe, rel, name, replace, write_body):
     return {"name": fname, "path": str(dest), "rel": dest.relative_to(game).as_posix(), "size": size,
             "replaced": existed, "backup": backup, "created_dir": created}
 
-# --------------------------------------------------------------------------- archives unpacked over a game (patches)
 
 PATCH_DIR = CACHE_DIR / "patches"
 PATCH_TTL = 3600
@@ -4194,8 +3385,1283 @@ def patch_apply(tok, strip=False, backup=True):
     log(f"patch {info['name']} -> {target}: {out['written']} written, {out['replaced']} replaced, "
         f"{out['backups']} backups, {len(skipped)} skipped")
     return out
+'''),
+    'deckdrop.paths': (False, 'deckdrop/paths.py', r'''"""File names and paths: safe names, archive volumes, unique targets, sizes."""
 
-# --------------------------------------------------------------------------- http
+import re
+import urllib.parse
+from pathlib import Path
+
+from .config import ARCHIVE_EXTS
+from .jobs import LOCK
+
+
+def safe_name(name):
+    name = urllib.parse.unquote(name)
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r'[\x00-\x1f<>:"|?*]', "_", name).strip(" .")
+    return name or "download.bin"
+
+
+def archive_ext(name):
+    low = name.lower()
+    for ext in sorted(ARCHIVE_EXTS, key=len, reverse=True):
+        if low.endswith(ext):
+            return ext
+    return None
+
+
+def split_ext(name):
+    ext = archive_ext(name) or Path(name).suffix
+    return (name[:-len(ext)] if ext else name), ext
+
+
+def archive_volume(name):
+    """'primary' for an archive or the first part of a split one, 'secondary' for the other parts."""
+    low = name.lower()
+    m = re.search(r"\.part(\d+)\.rar$", low) or re.search(r"\.(?:7z|zip|rar|tar)\.(\d{3})$", low)
+    if m:
+        return "primary" if int(m.group(1)) == 1 else "secondary"
+    if re.search(r"\.[rz]\d{2}$", low):
+        return "secondary"                    # old-style .r00 / .z01 next to the .rar / .zip
+    return "primary" if archive_ext(name) else None
+
+
+def archive_stem(name):
+    """Game folder name for an archive: 'Game.part1.rar' and 'Game.7z.001' both give 'Game'."""
+    stem, _ = split_ext(name)
+    return re.sub(r"(?:\.part\d+|\.(?:7z|zip|rar|tar))$", "", stem, flags=re.I) or stem
+
+
+def reserve_path(directory, name):
+    """Pick a non-existing path in `directory` and reserve its .part file."""
+    directory.mkdir(parents=True, exist_ok=True)
+    stem, ext = split_ext(name)
+    with LOCK:
+        i = 1
+        while True:
+            cand = directory / (name if i == 1 else f"{stem} ({i}){ext}")
+            part = cand.with_name(cand.name + ".part")
+            if not cand.exists() and not part.exists():
+                part.touch()
+                return cand, part
+            i += 1
+
+
+def unique_dir(directory, name):
+    i = 1
+    while True:
+        cand = directory / (name if i == 1 else f"{name} ({i})")
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def filename_from_response(headers, url):
+    cd = headers.get("Content-Disposition", "") or ""
+    m = re.search(r"filename\*\s*=\s*([^']*)'[^']*'([^;]+)", cd)
+    if m:
+        try:
+            return safe_name(urllib.parse.unquote(m.group(2).strip(), encoding=m.group(1) or "utf-8"))
+        except (UnicodeError, LookupError):
+            pass
+    m = re.search(r'filename\s*=\s*"([^"]+)"', cd) or re.search(r"filename\s*=\s*([^;]+)", cd)
+    if m:
+        return safe_name(m.group(1).strip())
+    tail = urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]
+    return safe_name(tail) if tail else "download.bin"
+
+
+def dir_size(path):
+    total, files = 0, 0
+    for f in Path(path).rglob("*"):
+        if f.is_file():
+            try:
+                total += f.stat().st_size
+                files += 1
+            except OSError:
+                pass
+    return total, files
+'''),
+    'deckdrop.saves': (False, 'deckdrop/saves.py', r'''"""Save games: find, back up to a zip, import back."""
+
+import json
+import re
+import secrets
+import shutil
+import time
+import zipfile
+from pathlib import Path
+
+from . import __version__
+from .config import CACHE_DIR, CHUNK
+from .detect import game_exe_path, is_linux_exe, norm_title, pretty_name
+from .paths import dir_size
+from .steam.library import compatdata_dir
+from .steam.shortcuts import resolve_appid
+
+
+SAVE_DIR_RE = re.compile(r"^(save|saves|savedata|save_data|savegame|savegames|sav|userdata|profile|profiles)$", re.I)
+PREFIX_SUBDIRS = ("AppData/Roaming", "AppData/Local", "AppData/LocalLow", "Documents", "Saved Games")
+PREFIX_SKIP = {"microsoft", "temp", "crashdumps", "packages", "d3dscache", "nvidia", "steam", "programs",
+               "connecteddevicesplatform", "comms", "placeholdertilelogofolder", "publishers", "google", "mozilla"}
+
+
+def save_sources(game_dir, exe):
+    """[(group, base, path)] - dirs to back up; archive paths are group/<rel to base>."""
+    g = Path(game_dir)
+    p = g / exe
+    srcs = []
+
+    def walk(d, depth):
+        for c in d.iterdir():
+            if not c.is_dir():
+                continue
+            if SAVE_DIR_RE.match(c.name):
+                srcs.append(("game", g, c))
+            elif depth < 3:
+                walk(c, depth + 1)
+
+    walk(g, 0)
+    appid = resolve_appid(p)
+    if appid and not is_linux_exe(p):
+        user = compatdata_dir(appid) / "pfx" / "drive_c" / "users" / "steamuser"
+        for sub in PREFIX_SUBDIRS:
+            base = user / sub
+            if base.is_dir():
+                for c in base.iterdir():
+                    if c.is_dir() and c.name.lower() not in PREFIX_SKIP and not c.name.startswith("."):
+                        srcs.append(("prefix", user, c))
+    if is_linux_exe(p):
+        token = norm_title(pretty_name(p, g))[:6]
+        for base in (Path.home() / ".renpy", Path.home() / ".config" / "unity3d"):
+            if base.is_dir():
+                for c in base.rglob("*"):
+                    if c.is_dir() and len(c.relative_to(base).parts) <= 2 and token and token in norm_title(c.name):
+                        srcs.append(("home", Path.home(), c))
+    return srcs, appid
+
+
+def saves_info(game_dir, exe):
+    p = game_exe_path(game_dir, exe)
+    srcs, appid = save_sources(Path(game_dir), p.name if p.parent == Path(game_dir).resolve() else str(p.relative_to(Path(game_dir).resolve())))
+    out = []
+    for group, base, path in srcs:
+        size, files = dir_size(path)
+        out.append({"group": group, "path": str(path), "size": size, "files": files})
+    return {"appid": appid, "sources": out, "total": sum(s["size"] for s in out),
+            "prefix": str(compatdata_dir(appid)) if appid else None}
+
+
+def build_saves_zip(game_dir, exe):
+    p = game_exe_path(game_dir, exe)
+    g = Path(game_dir).resolve()
+    rel = str(p.relative_to(g))
+    srcs, appid = save_sources(g, rel)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out = CACHE_DIR / f"saves_{re.sub(r'[^A-Za-z0-9_-]+', '_', g.name)}_{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(2)}.zip"
+    manifest = {"deckdrop": __version__, "game": g.name, "exe": rel, "appid": appid,
+                "created": int(time.time()), "groups": [], "files": 0}
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for group, base, path in srcs:
+            manifest["groups"].append({"group": group, "path": str(path.relative_to(base))})
+            for f in path.rglob("*"):
+                if f.is_file():
+                    z.write(f, f"{group}/{f.relative_to(base).as_posix()}")
+                    manifest["files"] += 1
+        z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
+    return out, manifest
+
+
+def import_saves_zip(game_dir, exe, zip_path):
+    p = game_exe_path(game_dir, exe)
+    g = Path(game_dir).resolve()
+    appid = resolve_appid(p)
+    targets = {"game": g, "home": Path.home()}
+    if appid:
+        targets["prefix"] = compatdata_dir(appid) / "pfx" / "drive_c" / "users" / "steamuser"
+    backup, _ = build_saves_zip(game_dir, str(p.relative_to(g)))   # safety copy of what is there now
+    written, skipped = 0, 0
+    with zipfile.ZipFile(zip_path) as z:
+        try:
+            manifest = json.loads(z.read("manifest.json"))
+        except KeyError:
+            raise ValueError("это не бэкап сейвов DeckDrop (нет manifest.json)") from None
+        for info in z.infolist():
+            if info.is_dir() or info.filename == "manifest.json":
+                continue
+            group, _, rel = info.filename.partition("/")
+            base = targets.get(group)
+            if not base or not rel:
+                skipped += 1
+                continue
+            dest = (base / rel).resolve()
+            if base.resolve() not in dest.parents:
+                skipped += 1
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with z.open(info) as src, open(dest, "wb") as dst:
+                shutil.copyfileobj(src, dst, CHUNK)
+            written += 1
+    return {"written": written, "skipped": skipped, "from_game": manifest.get("game"),
+            "backup_of_previous": backup.name, "prefix_missing": "prefix" not in targets}
+'''),
+    'deckdrop.service': (False, 'deckdrop/service.py', r'''"""Install/uninstall as a systemd user service."""
+
+import subprocess
+import sys
+from pathlib import Path
+
+from . import __version__, bundle
+from .state import STATE, ensure_pin, load_state
+from .web.server import local_urls
+
+
+UNIT = """[Unit]
+Description=DeckDrop LAN inbox
+After=network-online.target
+
+[Service]
+ExecStart={python} {script}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def install():
+    if bundle.PATH is None:
+        raise SystemExit("из исходников сервис не ставится: собери файл (python tools/build.py) "
+                         "и запусти python3 dist/deckdrop.py --install")
+    load_state()
+    ensure_pin()
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    (unit_dir / "deckdrop.service").write_text(
+        UNIT.format(python=sys.executable, script=Path(bundle.PATH).resolve()))
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", "deckdrop.service"], check=True)
+    # restart, not `enable --now`: on an upgrade the unit is already active and
+    # would keep running the old code
+    subprocess.run(["systemctl", "--user", "restart", "deckdrop.service"], check=True)
+    print(f"DeckDrop {__version__} installed and running:", " ".join(local_urls()))
+    print(f"Admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
+
+
+def uninstall():
+    subprocess.run(["systemctl", "--user", "disable", "--now", "deckdrop.service"])
+    try:
+        (Path.home() / ".config" / "systemd" / "user" / "deckdrop.service").unlink()
+    except OSError:
+        pass
+    print("DeckDrop removed")
+'''),
+    'deckdrop.state': (False, 'deckdrop/state.py', r'''"""Persistent state (state.json), admin PIN, media gallery password and tokens."""
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import threading
+import time
+
+from .config import CEF_ENABLED, STATE_FILE, UPDATE_URL_DEFAULT, UPDATE_URL_LEGACY
+
+
+STATE_LOCK = threading.RLock()
+STATE = {
+    "admin_pin": os.environ.get("DECKDROP_PIN", ""),   # empty: a random one is made on first start
+    "hidden": [],                 # game dirs hidden from the list
+    "imported": [],               # single game folders located outside the DeckDrop roots
+    "added": {},                  # exe path -> {at, appid, name, art, ...}
+    "pending": [],                # steam ops waiting for CEF control: {op, exe, ...}
+    "update_url": UPDATE_URL_DEFAULT,
+    "media_pw": None,             # {salt, hash}
+    "default_compat": "proton_experimental",
+    "prefer_linux": True,
+    "vndb_auto": True,
+    "vndb_nsfw": True,             # False = skip 18+ images from VNDB
+    "archive_passwords": [],
+    "default_disk": "internal",
+    "proxy": "",                  # DeckDrop-only proxy: socks5://host:port or http://host:port
+    "proxy_downloads": False,     # also route game downloads through it
+    "mega_verify": True,          # check Mega's own checksum after a download
+    "cef_enabled": CEF_ENABLED,
+}
+SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "archive_passwords",
+                "default_disk", "cef_enabled", "update_url", "proxy", "proxy_downloads",
+                "mega_verify")
+PROTECTED_KEYS = ("proxy",)   # may carry credentials: PIN required to read or change
+
+
+def load_state():
+    try:
+        data = json.loads(STATE_FILE.read_text("utf-8"))
+        if isinstance(data, dict):
+            STATE.update(data)
+    except (OSError, ValueError):
+        pass
+    if str(STATE.get("update_url") or "").strip().lower() in UPDATE_URL_LEGACY:
+        STATE["update_url"] = UPDATE_URL_DEFAULT
+
+
+def save_state():
+    with STATE_LOCK:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(STATE, ensure_ascii=False, indent=1), "utf-8")
+        os.replace(tmp, STATE_FILE)
+
+
+def set_state(**kv):
+    with STATE_LOCK:
+        STATE.update(kv)
+        save_state()
+
+
+def added_rec(exe, create=False):
+    with STATE_LOCK:
+        recs = STATE.setdefault("added", {})
+        if create and exe not in recs:
+            recs[exe] = {"at": int(time.time())}
+        return dict(recs.get(exe, {}))
+
+
+def update_added(exe, **kv):
+    with STATE_LOCK:
+        rec = STATE.setdefault("added", {}).setdefault(exe, {"at": int(time.time())})
+        rec.update(kv)
+        save_state()
+
+
+def check_pin(pin):
+    stored = str(STATE.get("admin_pin") or "")
+    ok = bool(stored) and hmac.compare_digest(str(pin or ""), stored)
+    if not ok:
+        time.sleep(1)  # slow down guessing
+        raise PermissionError("неверный PIN")
+
+
+def ensure_pin():
+    """Give a fresh install a random admin PIN. Returns True when one was just made."""
+    if STATE.get("admin_pin"):
+        return False
+    set_state(admin_pin=f"{secrets.randbelow(10 ** 4):04d}")
+    return True
+
+
+def pw_hash(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
+    return {"salt": salt, "hash": digest}
+
+
+MEDIA_TOKENS = {}  # token -> expiry
+
+
+def media_login(password):
+    rec = STATE.get("media_pw")
+    if not rec:
+        raise PermissionError("пароль медиа ещё не задан")
+    if not hmac.compare_digest(pw_hash(password, rec["salt"])["hash"], rec["hash"]):
+        time.sleep(1)
+        raise PermissionError("неверный пароль")
+    token = secrets.token_urlsafe(24)
+    now = time.time()
+    for t, exp in list(MEDIA_TOKENS.items()):
+        if exp < now:
+            del MEDIA_TOKENS[t]
+    MEDIA_TOKENS[token] = now + 12 * 3600
+    return token
+
+
+def media_token_ok(token):
+    return bool(token) and MEDIA_TOKENS.get(token, 0) > time.time()
+'''),
+    'deckdrop.steam': (True, 'deckdrop/steam/__init__.py', r'''"""Steam: files on disk, compat tools, live control of the client, shortcuts."""
+'''),
+    'deckdrop.steam.cdp': (False, 'deckdrop/steam/cdp.py', r'''"""Live control of the Steam client through its CEF remote debugging port."""
+
+import base64
+import hashlib
+import json
+import os
+import socket
+import struct
+import time
+import urllib.parse
+import urllib.request
+
+from ..config import CEF_ENABLED, CEF_PORT, STEAM_ROOT, log
+from ..state import STATE
+
+
+def _ws_mask(data, mask):
+    n = len(data)
+    words = (n + 3) // 4
+    m = int.from_bytes(mask * words, "big")
+    d = int.from_bytes(data + b"\0" * (words * 4 - n), "big")
+    return (d ^ m).to_bytes(words * 4, "big")[:n]
+
+
+class WS:
+    """Minimal RFC 6455 client: text frames, fragmentation, ping/pong, close."""
+
+    def __init__(self, url, timeout=15):
+        u = urllib.parse.urlparse(url)
+        host, port = u.hostname, u.port or 80
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = u.path or "/"
+        if u.query:
+            path += "?" + u.query
+        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                           f"Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("websocket: соединение закрыто при рукопожатии")
+            buf += chunk
+        head, self.buf = buf.split(b"\r\n\r\n", 1)
+        status = head.split(b"\r\n", 1)[0]
+        if b" 101" not in status:
+            raise ConnectionError("websocket: " + status.decode(errors="replace"))
+        accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
+        if accept not in head:
+            raise ConnectionError("websocket: неверный Sec-WebSocket-Accept")
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("websocket: соединение закрыто")
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def _send(self, opcode, payload):
+        n = len(payload)
+        head = bytearray([0x80 | opcode])
+        if n < 126:
+            head.append(0x80 | n)
+        elif n < 65536:
+            head.append(0x80 | 126)
+            head += struct.pack(">H", n)
+        else:
+            head.append(0x80 | 127)
+            head += struct.pack(">Q", n)
+        mask = os.urandom(4)
+        self.sock.sendall(bytes(head) + mask + _ws_mask(payload, mask))
+
+    def send_text(self, text):
+        self._send(0x1, text.encode("utf-8"))
+
+    def recv_text(self):
+        message, started = bytearray(), False
+        while True:
+            b1, b2 = self._read(2)
+            fin, opcode, masked, n = b1 & 0x80, b1 & 0x0F, b2 & 0x80, b2 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", self._read(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", self._read(8))[0]
+            mask = self._read(4) if masked else None
+            data = self._read(n)
+            if mask:
+                data = _ws_mask(data, mask)
+            if opcode == 0x8:
+                raise ConnectionError("websocket: закрыто сервером")
+            if opcode == 0x9:
+                self._send(0xA, data)
+                continue
+            if opcode == 0xA:
+                continue
+            if opcode in (0x1, 0x2):
+                message, started = bytearray(data), True
+            elif opcode == 0x0 and started:
+                message += data
+            if fin and started:
+                return message.decode("utf-8", "replace")
+
+    def close(self):
+        try:
+            self._send(0x8, b"")
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class SteamCDP:
+    """Drive the running Steam client through its CEF remote-debugging port.
+
+    Enabled by the marker file <steam>/.cef-enable-remote-debugging (what Decky
+    Loader does); Steam picks it up on its next start. All calls evaluate JS in
+    Steam's SharedJSContext, where the SteamClient API lives.
+    """
+
+    def __init__(self, port):
+        self.port = port
+        self._cache = (0.0, None)
+
+    @property
+    def enabled(self):
+        return bool(STATE.get("cef_enabled", CEF_ENABLED))
+
+    def marker(self):
+        return STEAM_ROOT / ".cef-enable-remote-debugging"
+
+    def ensure_marker(self):
+        try:
+            if self.enabled and STEAM_ROOT.is_dir() and not self.marker().exists():
+                self.marker().touch()
+                log(f"created {self.marker()} - Steam control activates after the next Steam restart")
+            elif not self.enabled and self.marker().exists():
+                self.marker().unlink()
+        except OSError as e:
+            log(f"cef marker: {e}")
+
+    def target(self, force=False):
+        now = time.time()
+        if not force and now - self._cache[0] < 10:
+            return self._cache[1]
+        url = None
+        if self.enabled:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=1.5) as r:
+                    targets = json.load(r)
+                for t in targets:
+                    if t.get("title") == "SharedJSContext" and t.get("webSocketDebuggerUrl"):
+                        url = t["webSocketDebuggerUrl"]
+                        break
+                if url is None:
+                    for t in targets:
+                        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+                            url = t["webSocketDebuggerUrl"]
+                            break
+            except Exception:  # noqa: BLE001
+                url = None
+        self._cache = (now, url)
+        return url
+
+    def available(self):
+        return self.target() is not None
+
+    def status(self):
+        return {"enabled": self.enabled, "marker": self.marker().exists(), "available": self.available()}
+
+    def eval(self, expr, timeout=30):
+        url = self.target()
+        if not url:
+            raise RuntimeError("управление Steam недоступно")
+        ws = WS(url, timeout)
+        try:
+            ws.send_text(json.dumps({"id": 1, "method": "Runtime.evaluate",
+                                     "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}}))
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                msg = json.loads(ws.recv_text())
+                if msg.get("id") != 1:
+                    continue  # CDP events
+                if "error" in msg:
+                    raise RuntimeError("Steam: " + str(msg["error"].get("message")))
+                res = msg.get("result", {})
+                exc = res.get("exceptionDetails")
+                if exc:
+                    desc = (exc.get("exception") or {}).get("description") or exc.get("text") or "ошибка JS"
+                    raise RuntimeError("Steam JS: " + desc.splitlines()[0][:200])
+                return (res.get("result") or {}).get("value")
+            raise TimeoutError("Steam не ответил")
+        finally:
+            ws.close()
+
+    def call(self, fn, *args):
+        return self.eval(f"{fn}({', '.join(json.dumps(a, ensure_ascii=False) for a in args)})")
+
+    # -- SteamClient.Apps wrappers (same calls Decky plugins use)
+    def add_shortcut(self, name, exe, start_dir):
+        appid = self.call("SteamClient.Apps.AddShortcut", name, exe, start_dir, "")
+        if not isinstance(appid, (int, float)) or not appid:
+            raise RuntimeError(f"Steam не вернул appid ({appid!r})")
+        return int(appid) & 0xFFFFFFFF
+
+    def set_name(self, appid, name):
+        self.call("SteamClient.Apps.SetShortcutName", appid, name)
+
+    def set_exe(self, appid, exe_quoted, start_dir_quoted):
+        self.call("SteamClient.Apps.SetShortcutExe", appid, exe_quoted)
+        self.call("SteamClient.Apps.SetShortcutStartDir", appid, start_dir_quoted)
+
+    def set_compat(self, appid, tool):
+        self.call("SteamClient.Apps.SpecifyCompatTool", appid, tool or "")
+
+    def set_artwork(self, appid, data, ext, asset_type):
+        self.call("SteamClient.Apps.SetCustomArtworkForApp", appid, base64.b64encode(data).decode(), ext, asset_type)
+
+    def set_icon(self, appid, path):
+        self.call("SteamClient.Apps.SetShortcutIcon", appid, str(path))
+
+    def remove_shortcut(self, appid):
+        self.call("SteamClient.Apps.RemoveShortcut", appid)
+
+
+CDP = SteamCDP(CEF_PORT)
+'''),
+    'deckdrop.steam.compat': (False, 'deckdrop/steam/compat.py', r'''"""Compatibility tools (Proton) and which one a shortcut uses."""
+
+import re
+import time
+from pathlib import Path
+
+from ..config import STEAM_ROOT, log
+from ..steam.library import library_folders, text_vdf, vget
+
+
+_CT_CACHE = {"at": 0, "tools": []}
+
+
+def compat_tools():
+    """[{name, label}] - installed Valve Protons (from appmanifests) + compatibilitytools.d."""
+    if time.time() - _CT_CACHE["at"] < 60:
+        return _CT_CACHE["tools"]
+    tools, seen = [], set()
+
+    def add(name, label, rank):
+        if name and name not in seen:
+            seen.add(name)
+            tools.append((rank, {"name": name, "label": label}))
+
+    for lib in library_folders():
+        for acf in (lib / "steamapps").glob("appmanifest_*.acf"):
+            try:
+                m = re.search(r'"name"\s+"([^"]*)"', acf.read_text("utf-8", "replace"))
+            except OSError:
+                continue
+            title = m.group(1) if m else ""
+            m = re.match(r"Proton (Experimental|Hotfix|(\d+)\.(\d+))", title)
+            if not m:
+                continue
+            if m.group(1) == "Experimental":
+                add("proton_experimental", title, (0, 0))
+            elif m.group(1) == "Hotfix":
+                add("proton_hotfix", title, (1, 0))
+            else:
+                major, minor = int(m.group(2)), int(m.group(3))
+                add(f"proton_{major}" if minor == 0 else f"proton_{major}{minor}", title, (2, -(major * 100 + minor)))
+    for d in (STEAM_ROOT / "compatibilitytools.d", Path.home() / ".steam" / "root" / "compatibilitytools.d"):
+        for vdf in d.glob("*/compatibilitytool.vdf"):
+            try:
+                data = text_vdf(vdf.read_text("utf-8", "replace"))
+                ct = vget(data, "compatibilitytools", "compat_tools") or {}
+                for name, info in ct.items():
+                    label = vget(info, "display_name") if isinstance(info, dict) else None
+                    add(name, label or name, (3, 0))
+            except Exception as e:  # noqa: BLE001
+                log(f"{vdf}: {e}")
+    tools.sort(key=lambda t: t[0])
+    _CT_CACHE.update(at=time.time(), tools=[t[1] for t in tools])
+    return _CT_CACHE["tools"]
+
+
+_CT_MAP = {"key": None, "map": {}}
+
+
+def compat_mapping():
+    """appid -> compat tool name, straight from Steam's config.vdf.
+
+    This is the setting Steam actually uses, so a game added to Steam by hand (or imported into
+    DeckDrop) shows its real Proton instead of an empty box.
+    """
+    f = STEAM_ROOT / "config" / "config.vdf"
+    try:
+        key = (str(f), f.stat().st_mtime_ns)
+    except OSError:
+        return {}
+    if key == _CT_MAP["key"]:
+        return _CT_MAP["map"]
+    out = {}
+    try:
+        data = text_vdf(f.read_text("utf-8", "replace"))
+        mapping = vget(data, "InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping") or {}
+        for appid, info in mapping.items():
+            if appid.isdigit() and isinstance(info, dict):
+                out[int(appid)] = vget(info, "name") or ""
+    except Exception as e:  # noqa: BLE001
+        log(f"config.vdf: {e}")
+        return _CT_MAP["map"]
+    _CT_MAP.update(key=key, map=out)
+    return out
+
+
+def compat_for(appid, rec):
+    """Proton of a shortcut: our own record wins (it may be newer than the file), else Steam's."""
+    if "compat" in rec:
+        return rec.get("compat"), "deckdrop"
+    if appid is not None:
+        m = compat_mapping()
+        if appid in m:
+            return (m[appid] or None), "steam"
+    return None, None
+
+
+def compat_label(name):
+    for t in compat_tools():
+        if t["name"] == name:
+            return t["label"]
+    return name or "без Proton"
+'''),
+    'deckdrop.steam.library': (False, 'deckdrop/steam/library.py', r'''"""Steam on disk: userdata, VDF files, shortcuts, library folders, compatdata."""
+
+import re
+import struct
+import zlib
+from pathlib import Path
+
+from ..config import STEAM_ROOT, log
+
+
+def userdata_dirs():
+    base = STEAM_ROOT / "userdata"
+    if not base.is_dir():
+        return []
+    out = [d for d in base.iterdir() if d.is_dir() and d.name.isdigit() and d.name != "0"]
+    out.sort(key=lambda d: (d / "config").stat().st_mtime if (d / "config").exists() else 0, reverse=True)
+    return out
+
+
+def vdf_parse(buf):
+    """Parse binary VDF (shortcuts.vdf). Keys are lower-cased."""
+    pos = 0
+
+    def read_str():
+        nonlocal pos
+        end = buf.index(b"\0", pos)
+        s = buf[pos:end].decode("utf-8", "replace")
+        pos = end + 1
+        return s
+
+    def read_map():
+        nonlocal pos
+        d = {}
+        while pos < len(buf):
+            t = buf[pos]
+            pos += 1
+            if t == 8:
+                return d
+            key = read_str().lower()
+            if t == 0:
+                d[key] = read_map()
+            elif t == 1:
+                d[key] = read_str()
+            elif t == 2:
+                d[key] = struct.unpack_from("<i", buf, pos)[0]
+                pos += 4
+            else:
+                raise ValueError(f"unknown vdf type {t}")
+        return d
+
+    return read_map()
+
+
+def text_vdf(text):
+    """Parse text VDF (libraryfolders.vdf, compatibilitytool.vdf). Key case is preserved."""
+    root, stack, key = {}, [], None
+    stack.append(root)
+    for m in re.finditer(r'"((?:[^"\\]|\\.)*)"|([{}])|//[^\n]*', text):
+        if m.group(2) == "{":
+            d = {}
+            stack[-1][key or ""] = d
+            stack.append(d)
+            key = None
+        elif m.group(2) == "}":
+            if len(stack) > 1:
+                stack.pop()
+            key = None
+        elif m.group(1) is not None:
+            val = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+            if key is None:
+                key = val
+            else:
+                stack[-1][key] = val
+                key = None
+    return root
+
+
+def vget(d, *keys):
+    """Case-insensitive lookup through nested text-VDF dicts; None when missing."""
+    for k in keys:
+        if not isinstance(d, dict):
+            return None
+        d = next((v for kk, v in d.items() if kk.lower() == k.lower()), None)
+    return d
+
+
+def shortcut_appid(exe_quoted, appname):
+    """Steam's shortcut appid (32-bit) used for grid art filenames."""
+    return (zlib.crc32((exe_quoted + appname).encode("utf-8")) | 0x80000000) & 0xFFFFFFFF
+
+
+_SC_CACHE = {"key": None, "index": {}, "by_appid": {}}
+
+
+def shortcuts_index():
+    """{exe_path: {appid, name, userdata}} across all Steam users, cached by vdf mtimes."""
+    files = []
+    for ud in userdata_dirs():
+        f = ud / "config" / "shortcuts.vdf"
+        if f.is_file():
+            files.append((ud, f, f.stat().st_mtime_ns))
+    key = tuple((str(f), m) for _, f, m in files)
+    if key == _SC_CACHE["key"]:
+        return _SC_CACHE["index"]
+    index, by_appid = {}, {}
+    for ud, f, _ in files:
+        try:
+            data = vdf_parse(f.read_bytes())
+        except (ValueError, OSError, struct.error) as e:
+            log(f"shortcuts.vdf unreadable ({f}): {e}")
+            continue
+        for entry in (data.get("shortcuts") or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            exe_q = entry.get("exe") or ""
+            name = entry.get("appname") or ""
+            appid = entry.get("appid")
+            appid = (appid & 0xFFFFFFFF) if isinstance(appid, int) and appid else shortcut_appid(exe_q, name)
+            rec = {"appid": appid, "name": name, "userdata": str(ud)}
+            index[exe_q.strip('"')] = rec
+            by_appid[appid] = rec
+    _SC_CACHE.update(key=key, index=index, by_appid=by_appid)
+    return index
+
+
+def pick_userdata():
+    idx = shortcuts_index()
+    if idx:
+        return Path(next(iter(idx.values()))["userdata"])
+    dirs = userdata_dirs()
+    if not dirs:
+        raise RuntimeError("не нашёл папку userdata Steam")
+    return dirs[0]
+
+
+def library_folders():
+    libs = [STEAM_ROOT]
+    vdf = STEAM_ROOT / "steamapps" / "libraryfolders.vdf"
+    if vdf.is_file():
+        try:
+            data = text_vdf(vdf.read_text("utf-8", "replace"))
+            for v in (vget(data, "libraryfolders") or {}).values():
+                if isinstance(v, dict) and vget(v, "path"):
+                    p = Path(vget(v, "path"))
+                    if p.is_dir() and p not in libs:
+                        libs.append(p)
+        except Exception as e:  # noqa: BLE001
+            log(f"libraryfolders.vdf: {e}")
+    return libs
+
+
+def compatdata_dir(appid):
+    for lib in library_folders():
+        d = lib / "steamapps" / "compatdata" / str(appid)
+        if d.is_dir():
+            return d
+    return STEAM_ROOT / "steamapps" / "compatdata" / str(appid)
+'''),
+    'deckdrop.steam.session': (False, 'deckdrop/steam/session.py', r'''"""Environment of the running Steam session (fallback when CEF control is off)."""
+
+import os
+from pathlib import Path
+
+STEAM_PROCS = ("steam", "steamwebhelper", "gamescope")  # ranked: best env source first
+SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE")
+
+
+def proc_env(d, keys):
+    try:
+        raw = (d / "environ").read_bytes()
+    except OSError:
+        return {}
+    got = {}
+    for item in raw.split(b"\0"):
+        k, sep, v = item.decode("utf-8", "replace").partition("=")
+        if sep and k in keys and v:
+            got[k] = v
+    return got
+
+
+def session_env(proc="/proc"):
+    """Return (env, steam_running), borrowing session vars from the running Steam.
+
+    A systemd user service starts with a bare environment: no DISPLAY,
+    WAYLAND_DISPLAY, XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS. Without them
+    `steam steam://...` cannot reach the client running in Gaming Mode, so read
+    those values out of Steam's own /proc entry.
+    """
+    proc = Path(proc)
+    env = dict(os.environ)
+    if not proc.is_dir():
+        return env, False
+    uid = getattr(os, "getuid", lambda: None)()
+    running, ranked = False, []
+    for d in proc.iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            if uid is not None and d.stat().st_uid != uid:
+                continue
+            comm = (d / "comm").read_text(errors="replace").strip()
+        except OSError:
+            continue
+        if comm not in STEAM_PROCS:
+            continue
+        running = running or comm in ("steam", "steamwebhelper")
+        got = proc_env(d, SESSION_KEYS)
+        if got.get("XDG_RUNTIME_DIR") and (got.get("DISPLAY") or got.get("WAYLAND_DISPLAY")):
+            ranked.append((STEAM_PROCS.index(comm), got))
+    if ranked:
+        env.update(min(ranked, key=lambda r: r[0])[1])
+    return env, running
+'''),
+    'deckdrop.steam.shortcuts': (False, 'deckdrop/steam/shortcuts.py', r'''"""Non-Steam shortcuts: resolve app ids, rename, set Proton, pending ops."""
+
+import time
+from pathlib import Path
+
+from ..config import log
+from ..detect import game_exe_path
+from ..state import STATE, STATE_LOCK, added_rec, save_state, update_added
+from ..steam.cdp import CDP
+from ..steam.compat import compat_label
+from ..steam.library import shortcuts_index
+
+
+def queue_pending(**op):
+    with STATE_LOCK:
+        pend = list(STATE.get("pending") or [])
+        pend = [o for o in pend if not (o.get("op") == op["op"] and o.get("exe") == op["exe"])]
+        pend.append(op)
+        STATE["pending"] = pend
+        save_state()
+
+
+def resolve_appid(exe, wait=0):
+    """appid of the shortcut for exe: from state, else shortcuts.vdf (polling up to `wait` s)."""
+    rec = added_rec(str(exe))
+    if rec.get("appid"):
+        return rec["appid"]
+    deadline = time.time() + wait
+    while True:
+        sc = shortcuts_index().get(str(exe))
+        if sc:
+            update_added(str(exe), appid=sc["appid"])
+            return sc["appid"]
+        if time.time() >= deadline:
+            return None
+        time.sleep(1)
+
+
+def rename_shortcut(game_dir, exe, name):
+    p = game_exe_path(game_dir, exe)
+    name = name.strip()
+    if not name:
+        raise ValueError("пустое имя")
+    update_added(str(p), name=name)
+    appid = resolve_appid(p)
+    if CDP.available() and appid:
+        CDP.set_name(appid, name)
+        return f"переименовано в «{name}»"
+    queue_pending(op="rename", exe=str(p), name=name)
+    return "переименование в очереди до включения управления Steam"
+
+
+def set_compat_for(game_dir, exe, tool):
+    p = game_exe_path(game_dir, exe)
+    update_added(str(p), compat=tool or None)
+    appid = resolve_appid(p)
+    if CDP.available() and appid:
+        CDP.set_compat(appid, tool or "")
+        return f"Proton: {compat_label(tool)}"
+    queue_pending(op="compat", exe=str(p), tool=tool or "")
+    return "смена Proton в очереди до включения управления Steam"
+
+
+def drain_pending():
+    with STATE_LOCK:
+        ops = list(STATE.get("pending") or [])
+    if not ops or not CDP.available():
+        return 0
+    remaining, done = [], 0
+    for op in ops:
+        try:
+            appid = resolve_appid(op["exe"])
+            if not appid:
+                remaining.append(op)
+                continue
+            if op["op"] == "rename":
+                CDP.set_name(appid, op["name"])
+            elif op["op"] == "compat":
+                CDP.set_compat(appid, op.get("tool") or "")
+            done += 1
+            log(f"pending {op['op']} applied for {Path(op['exe']).name}")
+        except Exception as e:  # noqa: BLE001
+            op["error"] = str(e)
+            op["tries"] = op.get("tries", 0) + 1
+            if op["tries"] < 20:
+                remaining.append(op)
+            log(f"pending {op['op']} failed: {e}")
+    with STATE_LOCK:
+        STATE["pending"] = remaining
+        save_state()
+    return done
+
+
+def pending_loop():
+    while True:
+        time.sleep(20)
+        try:
+            drain_pending()
+        except Exception as e:  # noqa: BLE001
+            log(f"pending loop: {e}")
+'''),
+    'deckdrop.storage': (False, 'deckdrop/storage.py', r'''"""Disks and game roots: internal disk, microSD, extra roots, imported folders."""
+
+import os
+import shutil
+from pathlib import Path
+
+from .config import GAMES_DIR
+from .state import STATE
+
+
+def sd_mounts():
+    """Removable media mounted by SteamOS (/run/media/...) plus DECKDROP_DISKS extras."""
+    out = []
+    for base in (Path("/run/media"), Path("/run/media/deck")):
+        if not base.is_dir():
+            continue
+        for d in base.iterdir():
+            try:
+                if d.is_dir() and d.name != "deck" and os.path.ismount(d):
+                    out.append((d.name if d.name != "mmcblk0p1" else "microSD", d))
+            except OSError:
+                continue
+    for extra in os.environ.get("DECKDROP_DISKS", "").split(";"):
+        if "=" in extra:
+            label, p = extra.split("=", 1)
+            if Path(p).is_dir():
+                out.append((label.strip(), Path(p)))
+    return out
+
+
+def disks():
+    """[{id, label, root, free, total}] - internal first, then removable media."""
+    res = []
+
+    def add(disk_id, label, root):
+        probe = root if root.exists() else root.parent
+        try:
+            u = shutil.disk_usage(probe)
+            free, total = u.free, u.total
+        except OSError:
+            free = total = None
+        res.append({"id": disk_id, "label": label, "root": str(root), "free": free, "total": total})
+
+    add("internal", "Внутренний", GAMES_DIR)
+    for label, mount in sd_mounts():
+        add("sd:" + mount.name, label, mount / "Games")
+    return res
+
+
+def root_for(disk_id):
+    for d in disks():
+        if d["id"] == disk_id:
+            return Path(d["root"])
+    return GAMES_DIR
+
+
+def default_root():
+    return root_for(STATE.get("default_disk") or "internal")
+
+
+def game_roots():
+    return [Path(d["root"]) for d in disks()]
+
+
+def disk_label_for(path):
+    p = Path(path).resolve()
+    best = None
+    for d in disks():
+        r = Path(d["root"]).resolve()
+        if (r == p or r in p.parents) and (best is None or len(str(r)) > len(str(best[0]))):
+            best = (r, d["label"])
+    if best:
+        return best[1]
+    for label, mount in sd_mounts():          # imported game on a card, outside <mount>/Games
+        try:
+            if mount.resolve() in p.parents:
+                return label
+        except OSError:
+            continue
+    return "Внутренний" if inside(Path.home(), p) else "своя папка"
+
+
+def inside(root, path):
+    root = Path(root).resolve()
+    path = Path(path).resolve()
+    return root == path or root in path.parents
+
+
+def imported_dirs():
+    """Game folders the user pointed DeckDrop at. Each entry is one game, not a folder of games."""
+    out = []
+    for raw in STATE.get("imported") or []:
+        try:
+            p = Path(raw).resolve()
+        except OSError:
+            continue
+        if p.is_dir():
+            out.append(p)
+    return out
+
+
+# import is limited to places that belong to the user, so a typo cannot point DeckDrop at /etc
+IMPORT_ROOTS = (Path.home(), Path("/run/media"), Path("/media"), Path("/mnt"))
+
+
+def import_allowed(path):
+    return any(inside(r, path) for r in IMPORT_ROOTS if r.exists())
+
+
+def inside_any(path):
+    return any(inside(r, path) for r in game_roots()) or any(inside(d, path) for d in imported_dirs())
+'''),
+    'deckdrop.update': (False, 'deckdrop/update.py', r'''"""Self update from a release (or any URL) and restart."""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import urllib.error
+from pathlib import Path
+
+from . import __version__, bundle
+from .config import PORT, log
+from .net import http_get
+
+
+def self_update(url):
+    if bundle.PATH is None:
+        raise RuntimeError("запущено из исходников (src/): обновляй через git, "
+                           "кнопка работает только в собранном deckdrop.py")
+    script = Path(bundle.PATH).resolve()
+    try:
+        with http_get(url, 30) as r:
+            data = r.read()
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError(f"не удалось скачать {url}: {e}. Запущена ли раздача на ПК?") from e
+    if b"DeckDrop" not in data[:3000]:
+        raise RuntimeError("по ссылке лежит не deckdrop.py")
+    m = re.search(rb'__version__\s*=\s*"([^"]+)"', data)
+    ver = m.group(1).decode() if m else "?"
+    m = re.search(rb'DECKDROP_PORT",\s*"(\d+)"', data)
+    new_port = int(m.group(1)) if m else PORT
+    if data == script.read_bytes():
+        return f"уже стоит актуальная версия {ver}", new_port
+    new = script.with_suffix(".py.new")
+    new.write_bytes(data)
+    res = subprocess.run([sys.executable, "-m", "py_compile", str(new)], capture_output=True, text=True)
+    if res.returncode != 0:
+        new.unlink(missing_ok=True)
+        raise RuntimeError("новая версия не компилируется: " + res.stderr.strip()[-300:])
+    shutil.copy2(script, script.with_suffix(".py.bak"))
+    os.replace(new, script)
+    try:
+        script.chmod(0o755)
+    except OSError:
+        pass
+    if os.environ.get("DECKDROP_NO_RESTART") != "1":
+        threading.Timer(1.0, restart_self).start()
+    return f"обновлено {__version__} -> {ver}, перезапускаюсь", new_port
+
+
+def restart_self():
+    log("restarting")
+    if os.environ.get("INVOCATION_ID") and shutil.which("systemctl"):
+        subprocess.Popen(["systemctl", "--user", "restart", "deckdrop.service"])
+        return
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+'''),
+    'deckdrop.web': (True, 'deckdrop/web/__init__.py', r'''"""The web page and its HTTP API."""
+'''),
+    'deckdrop.web.page': (False, 'deckdrop/web/page.py', r'''"""The single page UI: index.html with app.css and app.js inlined, served as one response."""
+
+from ..bundle import resource
+
+PAGE = (resource("web/index.html")
+        .replace("/*@app.css*/", resource("web/app.css"))
+        .replace("/*@app.js*/", resource("web/app.js"))
+        .rstrip("\n"))
+'''),
+    'deckdrop.web.server': (False, 'deckdrop/web/server.py', r'''"""HTTP server: the page and the JSON API."""
+
+import json
+import re
+import secrets
+import socket
+import threading
+import urllib.parse
+import zipfile
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+
+from .. import __version__
+from ..archives import (
+    archive_cleanup, archive_delete, archive_extract_job, finish, inbox_clear, job_password,
+    list_archives,
+)
+from ..art.covers import (
+    art_current, art_file_for, art_from_exe, art_from_url, art_worker, custom_art, proxy_test,
+    vndb_image_list, vndb_search,
+)
+from ..config import CACHE_DIR, CHUNK, FFMPEG, GAMES_DIR, MIME, PORT, UPDATE_URL_DEFAULT, log
+from ..detect import game_exe_path
+from ..downloads import cancel_all, cancel_job, start_download, start_mega_downloads
+from ..games import (
+    add_to_steam, delete_game, game_info, import_candidates, import_game, list_games,
+    set_hidden, unimport_game,
+)
+from ..jobs import JOBS, LOCK, fail, new_job
+from ..media import PLACEHOLDER_SVG, clip_mp4, media_delete, media_item, media_thumb, scan_media
+from ..mega import mega_probe
+from ..net import mask_proxy
+from ..patches import (
+    _patch_drop, game_dir_list, game_file_upload, patch_apply, patch_unlock, patch_upload,
+)
+from ..paths import reserve_path, safe_name
+from ..saves import build_saves_zip, import_saves_zip, saves_info
+from ..state import (
+    MEDIA_TOKENS, PROTECTED_KEYS, SETTING_KEYS, STATE, check_pin, media_login, media_token_ok,
+    pw_hash, set_state,
+)
+from ..steam.cdp import CDP
+from ..steam.compat import compat_tools
+from ..steam.shortcuts import rename_shortcut, set_compat_for
+from ..storage import disks, root_for
+from ..update import self_update
+from .page import PAGE
+
 
 def local_urls():
     urls = [f"http://{socket.gethostname()}.local:{PORT}"]
@@ -4615,12 +5081,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(e)}, 500)
             except OSError:
                 pass                              # the client is already gone, e.g. the phone lost Wi-Fi
+'''),
+}
 
-
-PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0e1621"><title>DeckDrop</title>
-<style>
-:root{--bg:#0e1621;--panel:#16212e;--panel2:#1c2937;--line:#27394d;--text:#e8eef5;--muted:#8fa1b7;--accent:#4cc2ff;--accent2:#7c6cff;--ok:#3ddc97;--warn:#ffcf70;--danger:#ff6b7a;--r:16px}
+_FILES = {
+    'web/app.css': r''':root{--bg:#0e1621;--panel:#16212e;--panel2:#1c2937;--line:#27394d;--text:#e8eef5;--muted:#8fa1b7;--accent:#4cc2ff;--accent2:#7c6cff;--ok:#3ddc97;--warn:#ffcf70;--danger:#ff6b7a;--r:16px}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;
@@ -4749,96 +5214,8 @@ label.chk input{width:18px;height:18px;accent-color:var(--accent);flex:none}
 .hint{font-size:.82em;color:var(--muted);line-height:1.5;overflow-wrap:anywhere}
 .list{margin:6px 0;padding-left:18px}.list li{margin:3px 0;overflow-wrap:anywhere}
 @media (max-width:560px){.seg{margin-left:0;width:100%}.seg button{flex:1;padding:8px 4px;font-size:.85em}.hin{gap:8px}.chip.addr{display:none}.wrap{padding:0 12px 96px}.card{padding:14px}.exed .lbl{min-width:100%}}
-</style></head><body>
-<header><div class="hin"><div class="logo">D</div><span class="brand">DeckDrop</span><span class="chip" id="ver"></span><span class="chip click addr" id="addr" title="скопировать адрес"></span>
-<button class="ghost icon" id="settings" title="настройки">⚙</button>
-<div class="seg"><button id="tabGames" class="on">Игры</button><button id="tabArch">Архивы</button><button id="tabMedia">Медиа</button><button id="tabSettings">Настройки</button></div></div></header>
-<div class="wrap">
-<div id="pgGames">
-<div id="gameList">
- <div class="card"><h2>Добавить <select class="sel" id="disk" title="куда скачивать"></select></h2>
-  <div class="row"><input id="url" type="text" placeholder="Ссылка на файл: прямая, Mega, Яндекс.Диск, Google Drive" autocomplete="off"><button id="go">Скачать</button></div>
-  <div class="drop" id="drop"><div class="ic">⤓</div>Перетащи сюда файл или ссылку, либо просто Ctrl+V<br><label>выбрать файлы<input id="file" type="file" multiple></label></div>
- </div>
- <div class="card"><h2>Задания <span class="acts"><button class="danger sm" id="stopAll" hidden>остановить всё</button><button class="ghost sm" id="clear">очистить</button></span></h2><div id="jobs"></div></div>
- <div class="card"><h2>Игры <span class="acts"><button class="ghost sm" id="importGame">+ своя игра</button><button class="ghost sm" id="toggleHidden"></button></span></h2><div id="games"></div></div>
-</div>
-<div id="gamePage" hidden>
- <div class="row" style="margin-top:14px"><button class="ghost sm" id="gpBack">← к списку</button></div>
- <div class="card" id="gpHead"></div>
- <div class="card"><h2>Запуск</h2><div class="hint" style="margin-bottom:4px">Файл, добавленный в Steam, отмечен галочкой. Proton меняется прямо здесь.</div><div id="gpExes"></div></div>
- <div class="card" id="gpCoversCard" hidden><h2>Обложки <span class="acts"><button class="ghost sm" id="gpVndb">VNDB…</button><button class="ghost sm" id="gpIcon">из иконки exe</button></span></h2><div class="hint" id="gpCvHint"></div><div class="covers" id="gpCovers"></div></div>
- <div class="card" id="gpSavesCard" hidden><h2>Сейвы <span class="acts"><a id="gpSvDl"><button class="ghost sm" id="gpSvDlB">скачать бэкап</button></a><button class="ghost sm" id="gpSvImp">импортировать zip</button></span></h2><div class="hint" id="gpSaves"></div></div>
- <div class="card" id="gpFilesCard" hidden><h2>Файлы игры <span class="acts"><button class="ghost sm" id="gpFArch">распаковать архив…</button><button class="ghost sm" id="gpFUp">загрузить…</button></span></h2>
-  <div class="hint">Положить патч или любой другой файл в папку игры. Путь считается от папки с exe: пусто — рядом с exe, <code>data/patch</code> — в подпапку, <code>../</code> — на уровень выше, но не за пределы игры. Если такой файл уже есть, DeckDrop спросит, а самый первый вариант сохранит рядом как <code>.bak</code>. Архив с патчем можно распаковать сюда же: DeckDrop сначала покажет, что он поменяет.</div>
-  <div class="frow" id="gpFExeRow" hidden><label for="gpFExe">От какого exe</label><select id="gpFExe"></select></div>
-  <div class="frow"><label for="gpFDir">Путь от exe</label><input id="gpFDir" type="text" placeholder="пусто — рядом с exe" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-  <div class="hint" id="gpFWhere"></div><div id="gpFList"></div>
- </div>
- <div class="card"><h2>Действия</h2><div class="acts" id="gpActs"></div></div>
- <div class="card"><h2>Сведения</h2><div class="hint" id="gpInfo"></div></div>
-</div>
-</div>
-<div id="pgArch" hidden>
- <div class="card"><h2>Скачанные архивы <span class="acts"><span class="chip" id="archTotal"></span><button class="ghost sm" id="archCleanup">удалить распакованные</button><button class="danger sm" id="inboxClear">очистить всё</button></span></h2>
- <div class="hint" style="margin-bottom:6px">Архивы лежат в папке <code>_inbox</code> на каждом диске и после распаковки больше не нужны. Распакованные можно удалить одним нажатием, нераспакованные распаковать отсюда.</div>
- <div id="archives"></div></div>
-</div>
-<div id="pgMedia" hidden>
- <div id="mediaAuth"></div>
- <div id="mediaBody" hidden>
-  <div class="card"><div class="chips"><button data-f="all" class="on">Все</button><button data-f="image">Скриншоты</button><button data-f="video">Видео</button>
-   <input id="mq" type="search" placeholder="поиск по игре"><button class="ghost sm" id="mrefresh" title="пересканировать">⟳</button></div>
-   <div class="muted" id="mhint" style="font-size:.85em;margin-bottom:10px"></div>
-   <div class="grid" id="mgrid"></div></div>
- </div>
-</div>
-<div id="pgSettings" hidden>
- <div class="card"><h2>Steam</h2>
-  <div class="hint" id="sCdpTxt" style="margin-bottom:6px"></div>
-  <div class="frow"><label for="sCompat">Proton по умолчанию для всех новых игр</label><select id="sCompat" data-set="default_compat"></select>
-   <div class="hint" style="margin-top:6px">Применяется к играм, которые добавляются после смены. У уже добавленных Proton меняется в карточке игры.</div></div>
-  <label class="chk"><input type="checkbox" id="sLinux" data-set="prefer_linux">Предпочитать Linux-сборку, если она есть в архиве: идёт нативно, без Proton</label>
-  <label class="chk"><input type="checkbox" id="sCef" data-set="cef_enabled">Управлять Steam через отладочный порт, как Decky</label>
- </div>
- <div class="card"><h2>Обложки</h2>
-  <label class="chk"><input type="checkbox" id="sVndb" data-set="vndb_auto">Искать обложки на VNDB автоматически (экспериментально)</label>
-  <label class="chk"><input type="checkbox" id="sSafe" data-set="vndb_nsfw" data-invert="1">Пропускать картинки 18+ с VNDB</label>
- </div>
- <div class="card"><h2>Сеть</h2>
-  <div class="hint">Прокси используется <b>только самим DeckDrop</b>, остальной дек ходит в интернет как обычно.
-   Нужен, когда провайдер рвёт соединение с VNDB. Формат: <code>socks5://хост:порт</code> или <code>http://хост:порт</code>,
-   можно с логином: <code>socks5://user:pass@хост:порт</code>. Если на домашнем ПК уже стоит VPN-клиент с локальным
-   входом SOCKS5, подойдёт адрес этого ПК, например <code>socks5://192.168.1.10:10808</code> (в клиенте надо разрешить
-   подключения из локальной сети).</div>
-  <div class="frow"><label>Прокси для запросов DeckDrop</label><div class="row wrap"><code id="sProxyView" style="flex:1;min-width:160px;word-break:break-all"></code><button class="ghost sm" id="sProxyEdit">изменить 🔒</button></div><div class="hint" style="margin-top:6px">Логин и пароль прокси не показываются и не уходят на страницу без PIN.</div></div>
-  <label class="chk"><input type="checkbox" id="sProxyDl" data-set="proxy_downloads">Через прокси качать и сами игры (медленнее, но обходит блокировки файлохостингов)</label>
-  <div class="row"><button class="ghost sm" id="sTest">Проверить связь с VNDB</button></div>
-  <div class="hint" id="sTestRes"></div>
- </div>
- <div class="card"><h2>Mega</h2>
-  <div class="hint">Ссылки <code>mega.nz</code> работают как обычные. Mega шифрует файлы у себя в браузере,
-   ключ лежит в самой ссылке после решётки — копируй её целиком, иначе расшифровать нечем. Файл приходит
-   зашифрованным и расшифровывается прямо на деке. Ссылка на папку откроет список: отметь, что качать, и отмеченное скачается одной игрой со всеми папками.
-   Файлы качаются по одному — Mega не любит несколько соединений с одного адреса.</div>
-  <label class="chk"><input type="checkbox" id="sMega" data-set="mega_verify">Проверять контрольную сумму Mega после скачивания</label>
- </div>
- <div class="card"><h2>Архивы</h2>
-  <div class="frow"><label for="sPw">Пароли, которые пробовать автоматически (через запятую)</label><input id="sPw" type="text" data-set="archive_passwords" placeholder="anivisual, 1234" autocomplete="off"></div>
- </div>
- <div class="card"><h2>Обновление и PIN</h2>
-  <div class="frow"><label for="sUpd">Откуда обновлять утилиту</label><input id="sUpd" type="text" data-set="update_url" autocomplete="off"></div>
-  <div class="frow"><label>Сменить PIN</label><div class="row wrap"><input id="sPinOld" type="password" inputmode="numeric" placeholder="текущий" autocomplete="off"><input id="sPinNew" type="password" inputmode="numeric" placeholder="новый, 4–8 цифр" autocomplete="off"><button class="sm" id="sPinGo">Сменить</button></div></div>
- </div>
- <div class="card"><h2>О системе</h2><div class="hint" id="sInfo"></div></div>
-</div>
-<footer><span id="ffm"></span><span class="acts"><button class="ghost sm" id="mediaReset">сбросить пароль медиа</button><button class="ghost sm" id="update">Обновить утилиту</button></span></footer>
-</div>
-<div id="viewer"><div class="vbar"><span class="t" id="vtitle"></span><a id="vopen" target="_blank" rel="noopener"><button class="ghost sm">открыть</button></a><a id="vdl"><button class="ghost sm">скачать</button></a><button class="danger sm" id="vdel">удалить с дека 🔒</button><button class="ghost sm" id="vclose">✕</button></div><div class="vbody" id="vbody"></div></div>
-<div id="modal"><div class="mbox" id="mbox"></div></div>
-<div id="toasts"></div>
-<script>
-const $=s=>document.querySelector(s);
+''',
+    'web/app.js': r'''const $=s=>document.querySelector(s);
 const isUrl=t=>/^https?:\/\/\S+$/i.test(t);
 const busy=new Set(),expanded=new Set();let showHidden=false,lastState=null,tab='games',archTimer=null;
 let sigGames='',sigJobs='',sigDisks='',holdGames=0;
@@ -5196,71 +5573,137 @@ $('#update').onclick=async()=>{const r=await ask({title:'Обновить ути
  const np=j.new_port&&String(j.new_port)!==(location.port||'80')?j.new_port:null;const target=np?`${location.protocol}//${location.hostname}:${np}/`:null;
  if(target){toast('Новый адрес: '+target,'ok');setTimeout(()=>location.href=target,4000);return;}
  let n=0;const t=setInterval(async()=>{n++;try{const s=await(await fetch('/api/state')).json();if(s.version!==old){clearInterval(t);b.textContent='готово: v'+s.version;toast('Обновлено до v'+s.version,'ok');setTimeout(()=>location.reload(),1500);}}catch(e){}if(n>40){clearInterval(t);b.disabled=false;b.textContent='Обновить утилиту';}},1000);};
-</script></body></html>"""
+''',
+    'web/index.html': r'''<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0e1621"><title>DeckDrop</title>
+<style>
+/*@app.css*/</style></head><body>
+<header><div class="hin"><div class="logo">D</div><span class="brand">DeckDrop</span><span class="chip" id="ver"></span><span class="chip click addr" id="addr" title="скопировать адрес"></span>
+<button class="ghost icon" id="settings" title="настройки">⚙</button>
+<div class="seg"><button id="tabGames" class="on">Игры</button><button id="tabArch">Архивы</button><button id="tabMedia">Медиа</button><button id="tabSettings">Настройки</button></div></div></header>
+<div class="wrap">
+<div id="pgGames">
+<div id="gameList">
+ <div class="card"><h2>Добавить <select class="sel" id="disk" title="куда скачивать"></select></h2>
+  <div class="row"><input id="url" type="text" placeholder="Ссылка на файл: прямая, Mega, Яндекс.Диск, Google Drive" autocomplete="off"><button id="go">Скачать</button></div>
+  <div class="drop" id="drop"><div class="ic">⤓</div>Перетащи сюда файл или ссылку, либо просто Ctrl+V<br><label>выбрать файлы<input id="file" type="file" multiple></label></div>
+ </div>
+ <div class="card"><h2>Задания <span class="acts"><button class="danger sm" id="stopAll" hidden>остановить всё</button><button class="ghost sm" id="clear">очистить</button></span></h2><div id="jobs"></div></div>
+ <div class="card"><h2>Игры <span class="acts"><button class="ghost sm" id="importGame">+ своя игра</button><button class="ghost sm" id="toggleHidden"></button></span></h2><div id="games"></div></div>
+</div>
+<div id="gamePage" hidden>
+ <div class="row" style="margin-top:14px"><button class="ghost sm" id="gpBack">← к списку</button></div>
+ <div class="card" id="gpHead"></div>
+ <div class="card"><h2>Запуск</h2><div class="hint" style="margin-bottom:4px">Файл, добавленный в Steam, отмечен галочкой. Proton меняется прямо здесь.</div><div id="gpExes"></div></div>
+ <div class="card" id="gpCoversCard" hidden><h2>Обложки <span class="acts"><button class="ghost sm" id="gpVndb">VNDB…</button><button class="ghost sm" id="gpIcon">из иконки exe</button></span></h2><div class="hint" id="gpCvHint"></div><div class="covers" id="gpCovers"></div></div>
+ <div class="card" id="gpSavesCard" hidden><h2>Сейвы <span class="acts"><a id="gpSvDl"><button class="ghost sm" id="gpSvDlB">скачать бэкап</button></a><button class="ghost sm" id="gpSvImp">импортировать zip</button></span></h2><div class="hint" id="gpSaves"></div></div>
+ <div class="card" id="gpFilesCard" hidden><h2>Файлы игры <span class="acts"><button class="ghost sm" id="gpFArch">распаковать архив…</button><button class="ghost sm" id="gpFUp">загрузить…</button></span></h2>
+  <div class="hint">Положить патч или любой другой файл в папку игры. Путь считается от папки с exe: пусто — рядом с exe, <code>data/patch</code> — в подпапку, <code>../</code> — на уровень выше, но не за пределы игры. Если такой файл уже есть, DeckDrop спросит, а самый первый вариант сохранит рядом как <code>.bak</code>. Архив с патчем можно распаковать сюда же: DeckDrop сначала покажет, что он поменяет.</div>
+  <div class="frow" id="gpFExeRow" hidden><label for="gpFExe">От какого exe</label><select id="gpFExe"></select></div>
+  <div class="frow"><label for="gpFDir">Путь от exe</label><input id="gpFDir" type="text" placeholder="пусто — рядом с exe" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="hint" id="gpFWhere"></div><div id="gpFList"></div>
+ </div>
+ <div class="card"><h2>Действия</h2><div class="acts" id="gpActs"></div></div>
+ <div class="card"><h2>Сведения</h2><div class="hint" id="gpInfo"></div></div>
+</div>
+</div>
+<div id="pgArch" hidden>
+ <div class="card"><h2>Скачанные архивы <span class="acts"><span class="chip" id="archTotal"></span><button class="ghost sm" id="archCleanup">удалить распакованные</button><button class="danger sm" id="inboxClear">очистить всё</button></span></h2>
+ <div class="hint" style="margin-bottom:6px">Архивы лежат в папке <code>_inbox</code> на каждом диске и после распаковки больше не нужны. Распакованные можно удалить одним нажатием, нераспакованные распаковать отсюда.</div>
+ <div id="archives"></div></div>
+</div>
+<div id="pgMedia" hidden>
+ <div id="mediaAuth"></div>
+ <div id="mediaBody" hidden>
+  <div class="card"><div class="chips"><button data-f="all" class="on">Все</button><button data-f="image">Скриншоты</button><button data-f="video">Видео</button>
+   <input id="mq" type="search" placeholder="поиск по игре"><button class="ghost sm" id="mrefresh" title="пересканировать">⟳</button></div>
+   <div class="muted" id="mhint" style="font-size:.85em;margin-bottom:10px"></div>
+   <div class="grid" id="mgrid"></div></div>
+ </div>
+</div>
+<div id="pgSettings" hidden>
+ <div class="card"><h2>Steam</h2>
+  <div class="hint" id="sCdpTxt" style="margin-bottom:6px"></div>
+  <div class="frow"><label for="sCompat">Proton по умолчанию для всех новых игр</label><select id="sCompat" data-set="default_compat"></select>
+   <div class="hint" style="margin-top:6px">Применяется к играм, которые добавляются после смены. У уже добавленных Proton меняется в карточке игры.</div></div>
+  <label class="chk"><input type="checkbox" id="sLinux" data-set="prefer_linux">Предпочитать Linux-сборку, если она есть в архиве: идёт нативно, без Proton</label>
+  <label class="chk"><input type="checkbox" id="sCef" data-set="cef_enabled">Управлять Steam через отладочный порт, как Decky</label>
+ </div>
+ <div class="card"><h2>Обложки</h2>
+  <label class="chk"><input type="checkbox" id="sVndb" data-set="vndb_auto">Искать обложки на VNDB автоматически (экспериментально)</label>
+  <label class="chk"><input type="checkbox" id="sSafe" data-set="vndb_nsfw" data-invert="1">Пропускать картинки 18+ с VNDB</label>
+ </div>
+ <div class="card"><h2>Сеть</h2>
+  <div class="hint">Прокси используется <b>только самим DeckDrop</b>, остальной дек ходит в интернет как обычно.
+   Нужен, когда провайдер рвёт соединение с VNDB. Формат: <code>socks5://хост:порт</code> или <code>http://хост:порт</code>,
+   можно с логином: <code>socks5://user:pass@хост:порт</code>. Если на домашнем ПК уже стоит VPN-клиент с локальным
+   входом SOCKS5, подойдёт адрес этого ПК, например <code>socks5://192.168.1.10:10808</code> (в клиенте надо разрешить
+   подключения из локальной сети).</div>
+  <div class="frow"><label>Прокси для запросов DeckDrop</label><div class="row wrap"><code id="sProxyView" style="flex:1;min-width:160px;word-break:break-all"></code><button class="ghost sm" id="sProxyEdit">изменить 🔒</button></div><div class="hint" style="margin-top:6px">Логин и пароль прокси не показываются и не уходят на страницу без PIN.</div></div>
+  <label class="chk"><input type="checkbox" id="sProxyDl" data-set="proxy_downloads">Через прокси качать и сами игры (медленнее, но обходит блокировки файлохостингов)</label>
+  <div class="row"><button class="ghost sm" id="sTest">Проверить связь с VNDB</button></div>
+  <div class="hint" id="sTestRes"></div>
+ </div>
+ <div class="card"><h2>Mega</h2>
+  <div class="hint">Ссылки <code>mega.nz</code> работают как обычные. Mega шифрует файлы у себя в браузере,
+   ключ лежит в самой ссылке после решётки — копируй её целиком, иначе расшифровать нечем. Файл приходит
+   зашифрованным и расшифровывается прямо на деке. Ссылка на папку откроет список: отметь, что качать, и отмеченное скачается одной игрой со всеми папками.
+   Файлы качаются по одному — Mega не любит несколько соединений с одного адреса.</div>
+  <label class="chk"><input type="checkbox" id="sMega" data-set="mega_verify">Проверять контрольную сумму Mega после скачивания</label>
+ </div>
+ <div class="card"><h2>Архивы</h2>
+  <div class="frow"><label for="sPw">Пароли, которые пробовать автоматически (через запятую)</label><input id="sPw" type="text" data-set="archive_passwords" placeholder="anivisual, 1234" autocomplete="off"></div>
+ </div>
+ <div class="card"><h2>Обновление и PIN</h2>
+  <div class="frow"><label for="sUpd">Откуда обновлять утилиту</label><input id="sUpd" type="text" data-set="update_url" autocomplete="off"></div>
+  <div class="frow"><label>Сменить PIN</label><div class="row wrap"><input id="sPinOld" type="password" inputmode="numeric" placeholder="текущий" autocomplete="off"><input id="sPinNew" type="password" inputmode="numeric" placeholder="новый, 4–8 цифр" autocomplete="off"><button class="sm" id="sPinGo">Сменить</button></div></div>
+ </div>
+ <div class="card"><h2>О системе</h2><div class="hint" id="sInfo"></div></div>
+</div>
+<footer><span id="ffm"></span><span class="acts"><button class="ghost sm" id="mediaReset">сбросить пароль медиа</button><button class="ghost sm" id="update">Обновить утилиту</button></span></footer>
+</div>
+<div id="viewer"><div class="vbar"><span class="t" id="vtitle"></span><a id="vopen" target="_blank" rel="noopener"><button class="ghost sm">открыть</button></a><a id="vdl"><button class="ghost sm">скачать</button></a><button class="danger sm" id="vdel">удалить с дека 🔒</button><button class="ghost sm" id="vclose">✕</button></div><div class="vbody" id="vbody"></div></div>
+<div id="modal"><div class="mbox" id="mbox"></div></div>
+<div id="toasts"></div>
+<script>
+/*@app.js*/</script></body></html>
+''',
+}
 
-# --------------------------------------------------------------------------- service install
-
-UNIT = """[Unit]
-Description=DeckDrop LAN inbox
-After=network-online.target
-
-[Service]
-ExecStart={python} {script}
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-"""
+import importlib.abc
+import importlib.util
+import linecache
+import sys
 
 
-def install():
-    load_state()
-    ensure_pin()
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    (unit_dir / "deckdrop.service").write_text(
-        UNIT.format(python=sys.executable, script=Path(__file__).resolve()))
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "deckdrop.service"], check=True)
-    # restart, not `enable --now`: on an upgrade the unit is already active and
-    # would keep running the old code
-    subprocess.run(["systemctl", "--user", "restart", "deckdrop.service"], check=True)
-    print(f"DeckDrop {__version__} installed and running:", " ".join(local_urls()))
-    print(f"Admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
+class _BundleImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Serves the `deckdrop` package from the sources embedded above."""
+
+    def find_spec(self, name, path=None, target=None):
+        if name not in _MODULES:
+            return None
+        is_pkg, rel, _ = _MODULES[name]
+        spec = importlib.util.spec_from_loader(name, self, origin=rel, is_package=is_pkg)
+        spec.has_location = True     # sets __file__ (to a relative, not existing path)
+        return spec
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        _, rel, src = _MODULES[module.__name__]
+        # register the source so tracebacks show the lines of src/deckdrop/<rel>
+        linecache.cache[rel] = (len(src), None, src.splitlines(True), rel)
+        exec(compile(src, rel, "exec"), module.__dict__)
 
 
-def uninstall():
-    subprocess.run(["systemctl", "--user", "disable", "--now", "deckdrop.service"])
-    try:
-        (Path.home() / ".config" / "systemd" / "user" / "deckdrop.service").unlink()
-    except OSError:
-        pass
-    print("DeckDrop removed")
+sys.meta_path.insert(0, _BundleImporter())
 
+import deckdrop.bundle  # noqa: E402
 
-def main():
-    if "--install" in sys.argv:
-        return install()
-    if "--uninstall" in sys.argv:
-        return uninstall()
-    load_state()
-    if ensure_pin():
-        log(f"new admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
-    (default_root() / "_inbox").mkdir(parents=True, exist_ok=True)
-    CDP.ensure_marker()
-    threading.Thread(target=pending_loop, daemon=True).start()
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    srv.daemon_threads = True
-    st = CDP.status()
-    log(f"DeckDrop {__version__} listening on " + " ".join(local_urls())
-        + f"  (games: {GAMES_DIR}, steam: {STEAM_ROOT}, ffmpeg: {'yes' if FFMPEG else 'no'}, "
-        + f"steam control: {'live' if st['available'] else ('after Steam restart' if st['marker'] else 'off')})")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
-
+deckdrop.bundle.PATH = __file__
+deckdrop.bundle.FILES = _FILES
 
 if __name__ == "__main__":
+    from deckdrop.app import main
     main()

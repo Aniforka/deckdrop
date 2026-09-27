@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Smoke test: start deckdrop.py in a throwaway home and poke the read-only endpoints.
+"""Smoke test: start DeckDrop in a throwaway home and poke the read-only endpoints.
 
-Also guards the contract that already-installed copies rely on when they update
-themselves: they accept a new file only if it says "DeckDrop" near the top, and
-they read __version__ and the default port from it with regexes.
+    python3 tests/smoke.py dist/deckdrop.py    the built file
+    python3 tests/smoke.py tools/dev.py        straight from src/
 
-    python3 tests/smoke.py [path/to/deckdrop.py]
+For a built file it also guards the contract that installed copies rely on when they
+update themselves: they accept a new file only if it says "DeckDrop" near the top,
+and they read __version__ and the default port from it with regexes.
 """
 import json
 import os
@@ -18,7 +19,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-SCRIPT = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "deckdrop.py")
+SCRIPT = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "dist" / "deckdrop.py")
 
 
 def check_update_contract(data):
@@ -39,7 +40,8 @@ def get(port, path):
 
 
 def main():
-    check_update_contract(SCRIPT.read_bytes())
+    if SCRIPT.name == "deckdrop.py":
+        check_update_contract(SCRIPT.read_bytes())
     port = free_port()
     with tempfile.TemporaryDirectory() as home:
         env = dict(os.environ, HOME=home, DECKDROP_PORT=str(port), DECKDROP_CEF="0",

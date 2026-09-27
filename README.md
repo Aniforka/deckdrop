@@ -8,8 +8,8 @@ Proton по умолчанию и рисует все виды обложек: �
 Отдельные вкладки: скачанные архивы и защищённая паролем галерея скриншотов и записей.
 Сейвы можно забрать в zip и вернуть обратно, патчи — положить прямо в папку игры.
 
-Один файл на Python, только стандартная библиотека. На стоковом SteamOS ничего
-доустанавливать не нужно, и обновления системы его не ломают.
+Ставится одним файлом на Python, только стандартная библиотека. На стоковом SteamOS
+ничего доустанавливать не нужно, и обновления системы его не ломают.
 
 *A LAN inbox and Steam helper for Steam Deck: paste a link or drop a file from your phone,
 the Deck downloads, unpacks and adds the game to Steam with cover art. The UI is in Russian.*
@@ -98,8 +98,10 @@ python3 ~/deckdrop/deckdrop.py --install
 
 Подходит, если у дека нет выхода на GitHub или хочется поставить свою правленую копию.
 
-1. На ПК скачай репозиторий (или только `deckdrop.py` и `install.sh`), открой терминал
-   в этой папке и запусти раздачу. Окно не закрывай:
+1. На ПК скачай `deckdrop.py` и `install.sh` со страницы
+   [последнего релиза](https://github.com/Aniforka/deckdrop/releases/latest) (или собери
+   свою копию, см. [Разработка](#разработка)), открой терминал в этой папке и запусти
+   раздачу. Окно не закрывай:
 
    ```bash
    python -m http.server 8000
@@ -148,7 +150,8 @@ DeckDrop управляет клиентом (см. [Управление Steam]
 ### Обновление
 
 Внизу страницы есть кнопка **«Обновить утилиту»**. По умолчанию она берёт `deckdrop.py`
-из последнего [релиза](https://github.com/Aniforka/deckdrop/releases/latest). Можно указать и свою ссылку, например раздачу с ПК
+из последнего [релиза](https://github.com/Aniforka/deckdrop/releases/latest). Можно указать
+и свою ссылку, например раздачу с ПК
 `http://192.168.1.10:8000/deckdrop.py`: адрес запоминается. DeckDrop скачает файл, проверит
 его и перезапустится сам. Если в новой версии сменился порт, страница сама переедет
 на новый адрес. Настройки, пароли и список игр при обновлении сохраняются.
@@ -444,31 +447,79 @@ DeckDrop рассчитан на **домашнюю сеть**. Галерея �
 
 ## Разработка
 
-Весь проект — один файл [`deckdrop.py`](deckdrop.py): сервер, логика и страница
-(HTML, CSS и JS лежат в нём строкой). Внешних зависимостей нет, поэтому его можно
-запустить и на ПК для проверки интерфейса:
+Исходники лежат пакетом в [`src/deckdrop`](src/deckdrop), по модулю на область.
+Пользователю по-прежнему достаётся один файл: [`tools/build.py`](tools/build.py) собирает
+пакет в `dist/deckdrop.py`, и именно его выкладывают релизы. Внешних зависимостей нет,
+ни у приложения, ни у сборки.
+
+```
+src/deckdrop/
+  __init__.py        версия и описание
+  app.py             точка входа: сервер и фоновые циклы
+  config.py          переменные окружения, пути, константы, log()
+  state.py           state.json, PIN, пароль галереи
+  storage.py         диски, microSD, корни игр
+  jobs.py            задачи загрузки/распаковки
+  paths.py           имена файлов, тома архивов, размеры
+  net.py             прокси (SOCKS5/HTTP), HTTP, повторы
+  downloads.py       загрузка по ссылке, очередь, отмена
+  aes.py, mega.py    Mega: AES (libcrypto или чистый Python), API, папки
+  archives.py        распаковка, пароли, вкладка «Архивы»
+  detect.py          exe в папке игры и человеческое имя игры
+  steam/             файлы Steam (VDF), Proton, управление клиентом через CEF, ярлыки
+  art/               PNG/ICO/PE-иконки, ffmpeg, обложки из иконки и VNDB
+  games.py           вкладка «Игры», импорт, добавление в Steam
+  saves.py, media.py, patches.py
+  update.py          самообновление и перезапуск
+  service.py         установка сервиса systemd
+  bundle.py          откуда запущена копия: собранный файл или src/
+  web/
+    server.py        HTTP API
+    page.py          сборка страницы из файлов ниже
+    index.html, app.css, app.js
+tools/
+  build.py           сборка в один файл
+  dev.py             запуск прямо из src/, без сборки
+tests/
+```
+
+Модули зависят только «вниз»: `web/server` и `app` сверху, `config` и `state` внизу,
+циклических импортов нет.
+
+Запуск на ПК без сборки (правки HTML/CSS/JS и Python видны после перезапуска):
 
 ```bash
-python deckdrop.py
+python tools/dev.py
 ```
 
 На Windows и без Steam часть функций просто покажет «недоступно», а страница откроется
 на `http://localhost:8088`. Чтобы не трогать свои папки, укажи отдельные
-`DECKDROP_STATE` и `DECKDROP_GAMES`. Перед коммитом прогони те же проверки, что и CI:
+`DECKDROP_STATE` и `DECKDROP_GAMES`. Из исходников не работают только кнопка обновления
+и `--install`: они нужны собранному файлу.
+
+Собрать и проверить то же, что CI:
 
 ```bash
-python -m pyflakes deckdrop.py
-python tests/smoke.py
+python tools/build.py                     # -> dist/deckdrop.py
+python -m pyflakes src tools tests
+python -m unittest discover -s tests      # модули, AES, PNG, VDF, обновление
+python tests/smoke.py tools/dev.py        # сервер из исходников
+python tests/smoke.py dist/deckdrop.py    # сервер из собранного файла
 ```
 
-`tests/smoke.py` запускает сервер во временной папке и проверяет, что страница и API
-отвечают, а файл по-прежнему подходит для обновления уже установленных копий.
+`tests/test_update.py` проверяет обновление целиком: установленная копия скачивает
+новую сборку по HTTP и подменяет себя, а старая однофайловая 0.3.23 тоже её принимает.
 
-**Выпуск версии.** Подними `__version__` в `deckdrop.py` и влей в `main`. GitHub Actions
-([`release.yml`](.github/workflows/release.yml)) прогонит проверки, создаст тег `vX.Y.Z`
-и релиз с `deckdrop.py` и `install.sh`; кнопка «Обновить утилиту» у всех возьмёт его.
-Коммиты без смены версии релиз не создают, их проверяет только
-[`ci.yml`](.github/workflows/ci.yml).
+**Выпуск версии.** Подними `__version__` в [`src/deckdrop/__init__.py`](src/deckdrop/__init__.py)
+и влей в `main`. GitHub Actions ([`release.yml`](.github/workflows/release.yml)) соберёт файл,
+прогонит проверки, создаст тег `vX.Y.Z` и релиз с `deckdrop.py` и `install.sh`; кнопка
+«Обновить утилиту» у всех возьмёт его. Коммиты без смены версии релиз не создают, их
+проверяет только [`ci.yml`](.github/workflows/ci.yml), на каждой ветке.
+
+**Временно:** в корне лежит собранный [`deckdrop.py`](deckdrop.py). Из него по старому адресу
+обновляются копии 0.3.23 и старше, после чего сами переключаются на релизы. Когда таких
+копий не останется, файл можно удалить. Пока он есть, CI требует, чтобы он совпадал
+со сборкой: `python tools/build.py -o deckdrop.py`.
 
 [`install.sh`](install.sh) — установщик для дека, принимает ссылку на `deckdrop.py`
 первым аргументом или в `DECKDROP_SRC`.
