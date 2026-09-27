@@ -25,16 +25,15 @@ def mask_proxy(url):
     url = (url or "").strip()
     if not url:
         return ""
-    try:
-        u = urllib.parse.urlparse(url)
-    except ValueError:
-        return "***"
-    if not (u.username or u.password):
+    # by hand, not urlparse: "user:pass@host:port" without a scheme, or a password with / or #,
+    # still work as a proxy but urlparse finds no credentials in them
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        scheme, rest = "", url
+    if "@" not in rest:
         return url
-    host = u.hostname or ""
-    if u.port:
-        host += f":{u.port}"
-    return f"{u.scheme}://***:***@{host}"
+    host = rest.rsplit("@", 1)[1].split("/", 1)[0]
+    return (f"{scheme}://" if sep else "") + f"***:***@{host}"
 
 
 def proxy_url():

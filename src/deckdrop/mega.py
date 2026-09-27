@@ -221,7 +221,9 @@ def mega_folder_files(link, refresh=False):
         except (ValueError, RuntimeError) as e:                    # noqa: PERF203
             log(f"mega: node {h} skipped ({e})")
             continue
-        names[h] = safe_name(attrs.get("n") or h)
+        if not isinstance(attrs, dict):                             # the folder owner wrote junk
+            attrs = {}
+        names[h] = safe_name(str(attrs.get("n") or h))
         if t == 0:
             files.append({"h": h, "name": names[h], "size": int(n.get("s") or 0),
                           "key": key, "nonce": nonce, "mac": mac})
@@ -256,7 +258,8 @@ def mega_node_info(link, want_url=True):
         res = mega_api(req)
         size = int(res.get("s") or 0)
         if res.get("at"):
-            name = mega_attrs(key, res["at"]).get("n")
+            attrs = mega_attrs(key, res["at"])
+            name = str(attrs.get("n") or "") if isinstance(attrs, dict) else None
         url = res.get("g")
     else:
         files = mega_folder_files(link)["files"]

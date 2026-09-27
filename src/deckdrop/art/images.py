@@ -8,6 +8,16 @@ from pathlib import Path
 from ..config import PNG_SIG, log
 
 
+# icons come from downloaded games: sizes in their headers are not to be trusted
+MAX_SIDE = 4096
+MAX_ICON_FILE = 16 << 20
+
+
+def _check_size(w, h):
+    if not (0 < w <= MAX_SIDE and 0 < h <= MAX_SIDE):
+        raise ValueError(f"image size {w}x{h} out of range")
+
+
 def pe_icon(path):
     """Best icon image (raw PNG or DIB bytes) from a PE executable, or None."""
     try:
@@ -50,12 +60,18 @@ def _pe_icon(m):
         return [struct.unpack_from("<II", m, dir_off + 16 + i * 8) for i in range(n_named + n_id)]
 
     def leaf(e):
-        while e & 0x80000000:
+        for _ in range(3):                  # type / name / language: a resource tree is 3 levels deep
+            if not e & 0x80000000:
+                break
             subs = entries(base + (e & 0x7FFFFFFF))
             if not subs:
                 raise ValueError("empty resource dir")
             e = subs[0][1]
+        if e & 0x80000000:
+            raise ValueError("resource tree too deep")
         rva, size = struct.unpack_from("<II", m, base + e)
+        if size > MAX_ICON_FILE:
+            raise ValueError("resource too big")
         o = off(rva)
         return bytes(m[o:o + size])
 
@@ -119,9 +135,10 @@ def png_decode(data):
             break
     if bd != 8 or il or ct not in (0, 2, 3, 4, 6):
         raise ValueError("unsupported png")
+    _check_size(w, h)
     ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ct]
-    raw = zlib.decompress(b"".join(idat))
     stride = w * ch
+    raw = zlib.decompressobj().decompress(b"".join(idat), h * (1 + stride))   # no zip bomb
     prev = bytearray(stride)
     out = bytearray()
     pos = 0
@@ -184,6 +201,7 @@ def dib_decode(data):
     h = abs(h2)
     if h == 2 * w:      # icon DIBs store XOR+AND bitmaps stacked, so height is doubled
         h //= 2
+    _check_size(w, h)
     off = size
     palette = []
     if bpp <= 8:
@@ -234,9 +252,11 @@ def find_icon_file(game_dir):
     for pat in pats:
         for p in sorted(Path(game_dir).glob(pat)):
             try:
+                if p.stat().st_size > MAX_ICON_FILE:
+                    continue
                 data = p.read_bytes()
                 return decode_icon_image(ico_best(data) if p.suffix.lower() == ".ico" else data)
-            except (ValueError, struct.error, zlib.error, IndexError):
+            except (OSError, ValueError, struct.error, zlib.error, IndexError):
                 continue
     return None
 

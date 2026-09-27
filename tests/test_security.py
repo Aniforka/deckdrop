@@ -3,13 +3,16 @@ import io
 import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,7 +21,10 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from deckdrop import state  # noqa: E402
 from deckdrop.archives import drop_escaping_links  # noqa: E402
-from deckdrop.web.server import host_ok, origin_ok, update_url_ok  # noqa: E402
+from deckdrop.art import images  # noqa: E402
+from deckdrop.net import mask_proxy  # noqa: E402
+from deckdrop.update import update_url_ok  # noqa: E402
+from deckdrop.web.server import host_ok, origin_ok  # noqa: E402
 
 
 class RulesTest(unittest.TestCase):
@@ -68,6 +74,61 @@ class RulesTest(unittest.TestCase):
             self.assertEqual(t.fails, 0)
         finally:
             state.time.sleep = sleep
+
+
+class ProxyMaskTest(unittest.TestCase):
+    def test_no_credentials_shown(self):
+        for raw, want in (("socks5://user:pass@10.0.0.2:1080", "socks5://***:***@10.0.0.2:1080"),
+                          ("user:pass@10.0.0.2:3128", "***:***@10.0.0.2:3128"),
+                          ("http://user:p/a#ss@proxy.lan:3128", "http://***:***@proxy.lan:3128"),
+                          ("socks5://10.0.0.2:1080", "socks5://10.0.0.2:1080"), ("", "")):
+            self.assertEqual(mask_proxy(raw), want)
+
+
+class ImagesTest(unittest.TestCase):
+    """Icons come from downloaded games: a crafted file must not hang or eat the Deck's memory."""
+
+    def png(self, w, h, raw):
+        def chunk(t, d):
+            return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+    def test_huge_sizes_refused(self):
+        with self.assertRaises(ValueError):
+            images.png_decode(self.png(1 << 28, 1, b"\0"))
+        with self.assertRaises(ValueError):
+            images.dib_decode(struct.pack("<IiiHHI", 40, 100000, 200000, 1, 32, 0) + b"\0" * 64)
+
+    def test_zip_bomb_is_cut(self):
+        w, h, px = images.png_decode(self.png(4, 4, b"\0" * (64 << 20)))
+        self.assertEqual((w, h, len(px)), (4, 4, 64))
+
+    def test_resource_loop(self):
+        # a PE whose icon group directory entry points at itself
+        m = bytearray(0x400)
+        m[:2] = b"MZ"
+        struct.pack_into("<I", m, 0x3C, 0x40)
+        m[0x40:0x44] = b"PE\0\0"
+        struct.pack_into("<HH", m, 0x46, 1, 0)             # 1 section; optional header size set below
+        struct.pack_into("<H", m, 0x54, 0xE0)
+        struct.pack_into("<H", m, 0x58, 0x10B)             # PE32
+        struct.pack_into("<I", m, 0x58 + 96 + 16, 0x1000)  # resource directory RVA
+        struct.pack_into("<IIII", m, 0x58 + 0xE0 + 8, 0x200, 0x1000, 0x200, 0x200)
+        base = 0x200
+        struct.pack_into("<HH", m, base + 12, 0, 2)
+        struct.pack_into("<II", m, base + 16, 3, 0x80000000 | 0x40)
+        struct.pack_into("<II", m, base + 24, 14, 0x80000000 | 0x80)
+        struct.pack_into("<HH", m, base + 0x80 + 12, 0, 1)
+        struct.pack_into("<II", m, base + 0x80 + 16, 1, 0x80000000 | 0x80)   # points at itself
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "loop.exe").write_bytes(bytes(m))
+            t = time.time()
+            self.assertIsNone(images.pe_icon(d / "loop.exe"))
+            self.assertLess(time.time() - t, 2)
+        finally:
+            shutil.rmtree(d)
 
 
 class LinksTest(unittest.TestCase):
@@ -135,6 +196,11 @@ class ServerTest(unittest.TestCase):
         status, _, _ = self.request("/api/settings", {"vndb_auto": True},
                                     headers={"Origin": f"http://127.0.0.1:{self.app.port}"})
         self.assertEqual(status, 200)
+
+    def test_add_only_as_a_page(self):
+        q = "/add?url=" + urllib.parse.quote("http://127.0.0.1:1/x.zip")
+        status, _, _ = self.request(q, headers={"Sec-Fetch-Dest": "image", "Sec-Fetch-Mode": "no-cors"})
+        self.assertEqual(status, 403)
 
     def test_bad_content_length(self):
         status, _, _ = self.request("/api/settings", raw=b"{}", headers={"Content-Length": "-5"})

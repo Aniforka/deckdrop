@@ -46,7 +46,7 @@ from ..steam.cdp import CDP
 from ..steam.compat import compat_tools
 from ..steam.shortcuts import rename_shortcut, set_compat_for
 from ..storage import disks, root_for
-from ..update import self_update
+from ..update import self_update, update_url_ok
 from .page import csp, render
 
 
@@ -128,20 +128,6 @@ def origin_ok(origin, host):
         return False
     return bool(u.netloc) and u.netloc.lower() == (host or "").strip().lower()
 
-
-def update_url_ok(url):
-    """Self update runs whatever it downloads: plain http only from the home network."""
-    u = urllib.parse.urlparse(url)
-    if u.scheme == "https":
-        return bool(u.hostname)
-    if u.scheme != "http" or not u.hostname:
-        return False
-    name = u.hostname.lower()
-    try:
-        ip = ipaddress.ip_address(name)
-        return ip.is_private or ip.is_loopback or ip.is_link_local
-    except ValueError:
-        return "." not in name or name.endswith((".local", ".lan", ".home", ".home.arpa", ".localhost"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -314,6 +300,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "settings": public_settings(), "compat_tools": compat_tools(),
                                 "cdp": CDP.status(), "pending": len(STATE.get("pending") or [])})
             elif path == "/add":  # GET /add?url=... for share shortcuts / bookmarklets
+                # a bookmarklet opens it as a page; an <img>/<iframe>/fetch on some web site must not
+                if self.headers.get("Sec-Fetch-Dest", "document") != "document":
+                    return self.send_json({"error": tr("err.forbidden_origin")}, 403)
                 start_download(self.q1(q, "url"), self.q1(q, "disk") or None)
                 self.redirect("/")
             elif path == "/api/game/import/scan":

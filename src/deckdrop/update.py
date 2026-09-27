@@ -1,5 +1,6 @@
 """Self update from a release (or any URL) and restart."""
 
+import ipaddress
 import os
 import re
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import threading
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 from . import __version__, bundle
@@ -15,12 +17,29 @@ from .i18n import tr
 from .net import http_get
 
 
+def update_url_ok(url):
+    """Self update runs whatever it downloads: plain http only from the home network."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme == "https":
+        return bool(u.hostname)
+    if u.scheme != "http" or not u.hostname:
+        return False
+    name = u.hostname.lower()
+    try:
+        ip = ipaddress.ip_address(name)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return "." not in name or name.endswith((".local", ".lan", ".home", ".home.arpa", ".localhost"))
+
+
 def self_update(url):
     if bundle.PATH is None:
         raise RuntimeError(tr("update.from_source"))
     script = Path(bundle.PATH).resolve()
     try:
         with http_get(url, 30) as r:
+            if not update_url_ok(r.geturl()):        # redirected from https to plain http elsewhere
+                raise RuntimeError(tr("update.need_https"))
             data = r.read()
     except (urllib.error.URLError, OSError) as e:
         raise RuntimeError(tr("update.download_failed", url=url, error=e)) from e

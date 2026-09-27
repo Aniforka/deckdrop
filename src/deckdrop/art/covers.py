@@ -12,7 +12,7 @@ from ..art.images import compose, dominant_color, load_icon, png_encode
 from ..config import FFMPEG, PNG_SIG, VNDB_UA, log
 from ..detect import clean_title, game_exe_path, norm_title, pretty_name
 from ..i18n import tr
-from ..net import net_open, net_reason, proxy_url, with_retries
+from ..net import mask_proxy, net_open, net_reason, proxy_url, with_retries
 from ..state import STATE, added_rec, update_added
 from ..steam.cdp import CDP
 from ..steam.library import pick_userdata, shortcut_appid, shortcuts_index, userdata_dirs
@@ -80,7 +80,7 @@ def proxy_test():
                                "note": tr("net.http_answer", code=e.code)})
             except Exception as e:  # noqa: BLE001
                 checks.append({"host": host, "mode": mode, "ok": False, "error": net_reason(e)})
-    return {"proxy": px or "", "checks": checks}
+    return {"proxy": mask_proxy(px), "checks": checks}   # the page is open to all: no credentials
 
 
 def vndb_search(q):
