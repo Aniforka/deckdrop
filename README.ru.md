@@ -6,6 +6,7 @@
 
 Открываешь страницу с телефона или ПК, вставляешь ссылку или кидаешь файл —
 дек сам скачивает, распаковывает и добавляет игру в Steam с обложками.
+А скриншоты и записи с дека так же просто забрать себе на телефон или ПК.
 
 [![Релиз](https://img.shields.io/github/v/release/Aniforka/deckdrop?label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7)](https://github.com/Aniforka/deckdrop/releases/latest)
 [![CI](https://github.com/Aniforka/deckdrop/actions/workflows/ci.yml/badge.svg)](https://github.com/Aniforka/deckdrop/actions/workflows/ci.yml)
