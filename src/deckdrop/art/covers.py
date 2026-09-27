@@ -221,6 +221,14 @@ def art_current(game_dir, exe):
             "note": rec.get("art_note"), "error": rec.get("art_error"), "live": CDP.available(), "slots": slots}
 
 
+def _dims(v):
+    """[width, height] from a VNDB answer as numbers only: the page puts them into HTML."""
+    try:
+        return [int(x) for x in v][:2] if isinstance(v, list) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def vndb_image_list(vn_id):
     """Cover + screenshots of one VN, for picking a single slot image by hand."""
     res = vndb_query(["id", "=", vn_id], 1)
@@ -230,10 +238,10 @@ def vndb_image_list(vn_id):
     out = []
     cover = v.get("image") or {}
     if vndb_allowed(cover):
-        out.append({"kind": "cover", "url": cover["url"], "dims": cover.get("dims")})
+        out.append({"kind": "cover", "url": cover["url"], "dims": _dims(cover.get("dims"))})
     for shot in v.get("screenshots") or []:
         if vndb_allowed(shot):
-            out.append({"kind": "screenshot", "url": shot["url"], "dims": shot.get("dims")})
+            out.append({"kind": "screenshot", "url": shot["url"], "dims": _dims(shot.get("dims"))})
     return {"id": v["id"], "title": v.get("title"), "images": out}
 
 

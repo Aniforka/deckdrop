@@ -30,9 +30,10 @@ from deckdrop.web.server import host_ok, origin_ok  # noqa: E402
 class RulesTest(unittest.TestCase):
     def test_host(self):
         for h in ("192.168.1.20:8088", "10.0.0.5", "[fe80::1]:8088", "steamdeck", "steamdeck.local:8088",
-                  "localhost:8088", "deck.lan", "deck.home.arpa", "deck.tail1234.ts.net", ""):
+                  "localhost:8088", "deck.lan", "deck.home.arpa", ""):
             self.assertTrue(host_ok(h), h)
-        for h in ("evil.example.com", "evil.example.com:8088", "1.2.3.4.nip.io", "a b", "x:y:z"):
+        for h in ("evil.example.com", "evil.example.com:8088", "1.2.3.4.nip.io", "evil.box:8088",
+                  "deck.tail1234.ts.net", "a b", "x:y:z"):
             self.assertFalse(host_ok(h), h)
 
     def test_extra_hosts(self):
@@ -74,6 +75,34 @@ class RulesTest(unittest.TestCase):
             self.assertEqual(t.fails, 0)
         finally:
             state.time.sleep = sleep
+
+    def test_throttle_parallel(self):
+        """Many guesses at once must not slip past the lockout while a slow check runs."""
+        import threading
+        t = state.Throttle()
+        t.FREE = 1
+        tried = []
+
+        def slow_wrong():
+            tried.append(1)
+            time.sleep(0.05)
+            return False
+
+        sleep, state.time.sleep = state.time.sleep, lambda s: None
+        try:
+            def guess():
+                try:
+                    t.check(slow_wrong, "no")
+                except PermissionError:
+                    pass
+            threads = [threading.Thread(target=guess) for _ in range(30)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        finally:
+            state.time.sleep = sleep
+        self.assertEqual(len(tried), 1)
 
 
 class ProxyMaskTest(unittest.TestCase):

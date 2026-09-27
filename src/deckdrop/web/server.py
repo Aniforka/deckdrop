@@ -70,9 +70,11 @@ def public_settings():
     return out
 
 
-# names a page on the home network is opened by; anything else in Host is a DNS rebinding attempt
+# names a page on the home network is opened by; anything else in Host is a DNS rebinding attempt.
+# Only suffixes that can never be registered in public DNS: .box or .ts.net can, so they have to
+# be named in DECKDROP_HOSTS
 LAN_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal", ".intranet", ".localdomain",
-                ".localhost", ".box", ".ts.net")
+                ".localhost")
 JSON_LIMIT = 1 << 20
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -301,7 +303,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "cdp": CDP.status(), "pending": len(STATE.get("pending") or [])})
             elif path == "/add":  # GET /add?url=... for share shortcuts / bookmarklets
                 # a bookmarklet opens it as a page; an <img>/<iframe>/fetch on some web site must not
-                if self.headers.get("Sec-Fetch-Dest", "document") != "document":
+                if (self.headers.get("Sec-Fetch-Dest", "document") != "document"
+                        or self.headers.get("Sec-Purpose") or self.headers.get("Purpose")):   # prefetch
                     return self.send_json({"error": tr("err.forbidden_origin")}, 403)
                 start_download(self.q1(q, "url"), self.q1(q, "disk") or None)
                 self.redirect("/")
@@ -336,7 +339,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not manifest["files"]:
                     out.unlink(missing_ok=True)
                     return self.send_json({"error": tr("saves.not_found")}, 404)
-                self.send_file(out, download_name=out.name)
+                try:
+                    self.send_file(out, download_name=out.name)
+                finally:
+                    out.unlink(missing_ok=True)       # made per request: don't let them pile up
             elif path == "/api/media/status":
                 self.send_json({"set": bool(STATE.get("media_pw"))})
             elif path == "/api/media/list":

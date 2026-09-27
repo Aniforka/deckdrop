@@ -89,26 +89,25 @@ class Throttle:
     MAX_WAIT = 60
 
     def __init__(self):
-        self.lock = threading.Lock()
-        self.fails = 0
-        self.until = 0.0
+        self.gate = threading.Lock()      # one guess at a time: parallel requests wait in line
+
+    fails = 0
+    until = 0.0
 
     def check(self, ok_fn, wrong_msg):
-        with self.lock:
+        with self.gate:
             wait = self.until - time.time()
-        if wait > 0:
-            time.sleep(1)
-            raise PermissionError(tr("err.too_many_attempts", s=int(wait) + 1))
-        if ok_fn():
-            with self.lock:
+            if wait > 0:
+                time.sleep(1)
+                raise PermissionError(tr("err.too_many_attempts", s=int(wait) + 1))
+            if ok_fn():
                 self.fails, self.until = 0, 0.0
-            return
-        with self.lock:
+                return
             self.fails += 1
             if self.fails >= self.FREE:
                 self.until = time.time() + min(self.MAX_WAIT, 2 ** (self.fails - self.FREE))
-        time.sleep(1)
-        raise PermissionError(wrong_msg)
+            time.sleep(1)                 # inside the gate: guesses cost a second each, all clients together
+            raise PermissionError(wrong_msg)
 
 
 PIN_THROTTLE = Throttle()

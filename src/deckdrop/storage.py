@@ -7,6 +7,7 @@ from pathlib import Path
 from . import bundle
 from .config import CACHE_DIR, GAMES_DIR, STATE_FILE, STEAM_ROOT
 from .i18n import tr
+from .steam.library import library_folders
 from .state import STATE
 
 
@@ -141,6 +142,9 @@ def import_dir_allowed(d):
     if any(r.exists() and d == r.resolve() for r in IMPORT_ROOTS):
         return False
     if any(inside(d, x) for x in [GAMES_DIR, STEAM_ROOT, *game_roots()]):
+        return False
+    # Steam's own files (the runtime, Proton, installed games) are shared by every game
+    if any(inside(x, d) for x in [STEAM_ROOT, *(lib / "steamapps" for lib in library_folders())]):
         return False
     return not any(inside(x, d) or inside(d, x) for x in _private_dirs())
 
