@@ -96,6 +96,7 @@ That's it. DeckDrop starts by itself every time the Deck boots and keeps working
 - [Mega](#mega)
 - [Network and proxy](#network-and-proxy)
 - [Settings](#settings)
+  - [Performance](#performance)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -465,6 +466,46 @@ automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, 
 checksum check, archive passwords, the update link, changing the PIN, and disk and address
 details.
 
+### Performance
+
+Settings → Performance checks DeckDrop and measures how much it loads the Deck. Everything
+runs on the Deck itself, you only press a button on the phone.
+
+**Self-check** goes over everything DeckDrop relies on and marks each item ✅ fine, ⚠️ worth a
+look, ❌ broken or ℹ️ for your information, with a line on what to do:
+
+| Item | What it looks at |
+|---|---|
+| Autostart | the systemd service is installed, enabled and starts this very copy |
+| Background tasks | the loop that applies queued Steam changes is alive |
+| Settings file | `state.json` is readable, not damaged and writable |
+| Disk: … | every disk: the games folder exists, writing works, free space |
+| Leftovers | half-downloaded files and temporary folders nobody uses |
+| Steam, Steam control | Steam and its shortcuts are found; live control is on |
+| Queued Steam changes | names and Proton that keep failing to apply |
+| Games on disk | shortcuts and imported games whose files are gone (or the microSD is out) |
+| Unpacking | `7z` or `bsdtar` for 7z and rar, zip is built in |
+| Mega decryption | the system `libcrypto` is there, so Mega downloads are fast |
+| Internet, Updates, VNDB | GitHub, the update link and VNDB answer, directly or through the proxy |
+| Log | errors since DeckDrop started, with the last one |
+
+**Measure the load** takes about 15 seconds:
+
+- **right now**: the CPU share DeckDrop takes, the CPU load of the whole Deck, and the Deck's
+  power draw in watts from the battery sensor (unplug the charger for an honest number);
+- **the Deck**: processor, memory, SteamOS version;
+- **DeckDrop itself**: memory, threads, open files, uptime, average CPU since the start;
+- **page updates**: what one update of the open page costs; the page asks once a second, so
+  this is also the load of simply keeping the page open;
+- **speed**: Mega decryption and checksum, unpacking zip, writing to each disk (a 64 MB test file
+  flushed to the disk and removed right away).
+
+**Copy report** puts the result on the clipboard, or shows it selected for copying: the page is
+plain http, where phones do not let pages use the clipboard. The small **⤓** button next to the
+card title downloads the last result as a Markdown file (`deckdrop-selfcheck-….md` or
+`deckdrop-load-….md`), ready to attach to a GitHub issue. Its layout is the template
+[`src/deckdrop/web/report.md`](src/deckdrop/web/report.md).
+
 ## Security
 
 DeckDrop is meant for a **home network**. The gallery and risky actions are protected by a
@@ -473,6 +514,9 @@ file on the Deck. There is no encryption (HTTPS), so passwords cross the network
 Do not expose port 8088 to the internet, and do not run DeckDrop on public networks.
 
 ## Troubleshooting
+
+Start with **Settings → Performance → Self-check**: most of the problems below show up there with
+a hint on what to do.
 
 <details>
 <summary><b>The page does not open at <code>steamdeck.local</code></b></summary>

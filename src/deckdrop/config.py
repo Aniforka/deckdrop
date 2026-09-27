@@ -1,5 +1,6 @@
 """Settings from the environment, fixed paths and constants, logging."""
 
+import collections
 import os
 import re
 import shutil
@@ -54,8 +55,11 @@ def _steam_root():
 
 STEAM_ROOT = _steam_root()
 MEDIA_DIRS = [Path.home() / "Videos", Path.home() / "Pictures"]
+STARTED = time.time()
+RECENT_LOG = collections.deque(maxlen=300)   # (time, line) for Settings -> Performance -> self-check
 
 
 def log(msg):
+    RECENT_LOG.append((time.time(), msg))
     sys.stderr.write(time.strftime("%H:%M:%S ") + msg + "\n")
     sys.stderr.flush()

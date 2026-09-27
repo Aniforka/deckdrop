@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROGRAM = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "dist" / "deckdrop.py")
 KEY_LIKE = re.compile(r"\b[a-z]+(?:\.[a-z_]+)+\b")
 NOT_KEYS = {"e.g", "i.e", "deckdrop.py", "mega.nz", "vndb.org", "api.vndb.org", "t.vndb.org", "icon.png",
-            "manifest.json"}
+            "manifest.json", "state.json", "github.com"}   # the last two: paths and links in the self-check
 
 
 def main():
@@ -57,6 +57,14 @@ def main():
                     page.click(tab)
                     page.wait_for_timeout(600)
                     seen.append(page.inner_text("body"))
+                # Settings -> Performance: both buttons, their results must be translated too
+                page.click("#tabSettings")
+                page.click("#perfCheck")
+                page.wait_for_selector(".perf-sum", timeout=40000)
+                page.click("#perfBench")
+                page.wait_for_selector(".perf-tab", timeout=60000)
+                seen.append(page.inner_text("#perfRes"))
+                page.click("#tabGames")
                 page.click(".gcard")
                 page.wait_for_timeout(1000)
                 seen.append(page.inner_text("body"))

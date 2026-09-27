@@ -323,6 +323,31 @@ $('#sTest').onclick=async()=>{const b=$('#sTest');b.disabled=true;b.textContent=
   }catch(e){$('#sTestRes').textContent=t('proxy.test_failed');}
  b.disabled=false;b.textContent=t('set.net.test');};
 $('#sPinGo').onclick=async()=>{const j=await api('/api/settings/pin',{old:$('#sPinOld').value,new:$('#sPinNew').value});if(j.ok){toast(t('pin.changed'),'ok');$('#sPinOld').value=$('#sPinNew').value='';}};
+// ---- performance: the self-check and the measurements run on the Deck, the page only shows them
+let perfReport='';
+const PERF_ICON={ok:'✅',warn:'⚠️',fail:'❌',info:'ℹ️'};
+function duration(s){return s<3600?t('unit.duration_min',{m:Math.floor(s/60)}):t('unit.duration',{h:Math.floor(s/3600),m:Math.floor(s%3600/60)});}
+function perfVal(r){const v=r.value;if(v==null)return '—';
+ return r.unit==='bytes'?fmt(v):r.unit==='mbps'?t('unit.mb_s',{n:v}):r.unit==='ms'?t('unit.ms',{n:v}):r.unit==='watts'?t('unit.watts',{n:v})
+  :r.unit==='pct'?v+'%':r.unit==='duration'?duration(v):String(v);}
+async function perfRun(kind){const b=kind==='check'?$('#perfCheck'):$('#perfBench'),label=b.textContent;
+ $('#perfCheck').disabled=$('#perfBench').disabled=true;b.textContent=kind==='check'?t('common.checking'):t('perf.measuring');
+ const j=await api('/api/perf/'+kind,{});$('#perfCheck').disabled=$('#perfBench').disabled=false;b.textContent=label;if(!j.ok)return;
+ const head=`DeckDrop v${(lastState&&lastState.version)||''} · ${label}`;let html,text;
+ if(kind==='check'){const c=j.counts,sum=c.fail?t('perf.summary.fail',{n:c.fail}):c.warn?t('perf.summary.warn',{n:c.warn}):t('perf.summary.ok');
+  html=`<p class="perf-sum ${c.fail?'fail':c.warn?'warn':'ok'}">${esc(sum)}</p>`+j.items.map(i=>`<div class="perf-item"><span>${PERF_ICON[i.status]}</span><div><b>${esc(i.title)}</b>${i.detail?`<small>${esc(i.detail)}</small>`:''}</div></div>`).join('');
+  text=`${head}\n${sum}\n\n`+j.items.map(i=>`${PERF_ICON[i.status]} ${i.title}${i.detail?' — '+i.detail:''}`).join('\n');}
+ else{html=j.sections.map(s=>`<h3>${esc(s.title)}</h3><table class="perf-tab">`+s.rows.map(r=>`<tr><td>${esc(r.label)}</td><td><b>${esc(perfVal(r))}</b>${r.note?`<small>${esc(r.note)}</small>`:''}</td></tr>`).join('')+'</table>').join('')
+   +`<div class="hint">${esc(t('perf.took',{n:j.seconds}))}</div>`;
+  text=head+'\n'+j.sections.map(s=>`\n${s.title}\n`+s.rows.map(r=>`  ${r.label}: ${perfVal(r)}${r.note?' ('+r.note+')':''}`).join('\n')).join('\n');}
+ $('#perfRes').innerHTML=html;perfReport=text;$('#perfCopy').hidden=false;
+ const dl=$('#perfDl');dl.href='/api/perf/report?kind='+kind;dl.hidden=false;}
+$('#perfCheck').onclick=()=>perfRun('check');$('#perfBench').onclick=()=>perfRun('bench');
+// the page is plain http on the home network, where browsers keep navigator.clipboard away: select the text instead
+$('#perfCopy').onclick=()=>{const ok=()=>toast(t('perf.copied'),'ok');
+ const manual=()=>{openModal(`<h3>${esc(t('set.perf.copy'))}</h3><p>${esc(t('perf.copy_hint'))}</p><textarea id="perfTxt" readonly rows="12" style="width:100%">${esc(perfReport)}</textarea><div class="btns"><button id="perfClose">${esc(t('btn.close'))}</button></div>`);
+  const ta=$('#perfTxt');ta.focus();ta.select();try{if(document.execCommand('copy'))ok();}catch(e){}$('#perfClose').onclick=closeModal;};
+ if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(perfReport).then(ok,manual);else manual();};
 // ---- media
 async function mediaEnter(){if(mediaToken){loadMedia();return;}const st=await(await fetch('/api/media/status')).json();const a=$('#mediaAuth');$('#mediaBody').hidden=true;
  if(!st.set){a.innerHTML=`<div class="card auth"><div class="lock">🔐</div><h3 style="margin:0">${t('media.first_title')}</h3><p>${t('media.first_text')}</p>
