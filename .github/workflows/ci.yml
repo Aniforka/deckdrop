@@ -21,10 +21,10 @@ jobs:
           - {os: ubuntu-latest, python: "3.13"}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0          # tests/test_update.py updates the last single-file release
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Lint
