@@ -1,0 +1,59 @@
+name: Release
+
+# A release is cut when __version__ in deckdrop.py changes on main:
+# tag vX.Y.Z plus a GitHub release carrying deckdrop.py and install.sh.
+# Installed copies update from releases/latest/download/deckdrop.py.
+
+on:
+  push:
+    branches: [main]
+    paths: [deckdrop.py, install.sh]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read version
+        id: ver
+        run: |
+          ver=$(python -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('deckdrop.py', encoding='utf-8').read()).group(1))")
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
+            echo "v$ver already released, nothing to do"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check
+        if: steps.ver.outputs.new == 'true'
+        run: |
+          python -m pip install pyflakes
+          python -m pyflakes deckdrop.py tests
+          sh -n install.sh
+          python tests/smoke.py
+
+      - name: Publish release
+        if: steps.ver.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "v$VER" deckdrop.py install.sh \
+            --target "$GITHUB_SHA" \
+            --title "DeckDrop $VER" \
+            --generate-notes

@@ -26,7 +26,7 @@ Env overrides: DECKDROP_PORT (8088), DECKDROP_GAMES (~/Games), DECKDROP_STATE (s
                DECKDROP_DISKS (extra roots "label=path;..."), DECKDROP_CEF=0 (no Steam control),
                DECKDROP_CEF_PORT (8080), DECKDROP_EXTRACT=0 (don't unpack), DECKDROP_KEEP=0
 """
-__version__ = "0.3.23"
+__version__ = "0.3.24"
 
 import base64
 import hashlib
@@ -62,7 +62,9 @@ CACHE_DIR = Path.home() / ".cache" / "deckdrop"
 AUTO_EXTRACT = os.environ.get("DECKDROP_EXTRACT", "1") != "0"
 KEEP_ARCHIVE = os.environ.get("DECKDROP_KEEP", "1") != "0"
 UPDATE_URL_DEFAULT = os.environ.get("DECKDROP_UPDATE_URL",
-                                    "https://raw.githubusercontent.com/aniforka/deckdrop/main/deckdrop.py")
+                                    "https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py")
+# where versions up to 0.3.23 updated from; a remembered copy of it is moved to the release link
+UPDATE_URL_LEGACY = ("https://raw.githubusercontent.com/aniforka/deckdrop/main/deckdrop.py",)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 VNDB_UA = f"DeckDrop/{__version__} (Steam Deck cover art)"
@@ -136,6 +138,8 @@ def load_state():
             STATE.update(data)
     except (OSError, ValueError):
         pass
+    if str(STATE.get("update_url") or "").strip().lower() in UPDATE_URL_LEGACY:
+        STATE["update_url"] = UPDATE_URL_DEFAULT
 
 
 def save_state():
@@ -598,7 +602,7 @@ def net_open(url, data=None, headers=None, timeout=60, proxy=None, method=None, 
                 url = urllib.parse.urljoin(url, loc)
                 continue
             if raw.status >= 400:
-                body = raw.read(400)
+                raw.read(400)
                 raw.close()
                 raise urllib.error.HTTPError(url, raw.status, raw.reason, raw.headers, None)
             return Resp(raw, url)

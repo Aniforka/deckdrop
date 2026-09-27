@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, python: "3.8"}    # oldest supported
+          - {os: ubuntu-latest, python: "3.11"}  # what SteamOS 3.x ships
+          - {os: ubuntu-latest, python: "3.13"}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install pyflakes
+      - run: python -m pyflakes deckdrop.py tests
+      - run: sh -n install.sh
+      - run: python tests/smoke.py

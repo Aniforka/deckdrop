@@ -63,7 +63,7 @@ Root-пароль, `sudo`, выключение read-only и Decky Loader **не
 3. Скачай установщик. Команда одной строкой:
 
    ```bash
-   wget https://raw.githubusercontent.com/aniforka/deckdrop/main/install.sh
+   wget https://github.com/Aniforka/deckdrop/releases/latest/download/install.sh
    ```
 
 4. Запусти его:
@@ -85,7 +85,7 @@ mkdir -p ~/deckdrop
 ```
 
 ```bash
-wget -O ~/deckdrop/deckdrop.py https://raw.githubusercontent.com/aniforka/deckdrop/main/deckdrop.py
+wget -O ~/deckdrop/deckdrop.py https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py
 ```
 
 ```bash
@@ -147,13 +147,16 @@ DeckDrop управляет клиентом (см. [Управление Steam]
 
 ### Обновление
 
-Внизу страницы есть кнопка **«Обновить утилиту»**. По умолчанию она берёт свежий
-`deckdrop.py` из этого репозитория. Можно указать и свою ссылку, например раздачу с ПК
+Внизу страницы есть кнопка **«Обновить утилиту»**. По умолчанию она берёт `deckdrop.py`
+из последнего [релиза](https://github.com/Aniforka/deckdrop/releases/latest). Можно указать и свою ссылку, например раздачу с ПК
 `http://192.168.1.10:8000/deckdrop.py`: адрес запоминается. DeckDrop скачает файл, проверит
 его и перезапустится сам. Если в новой версии сменился порт, страница сама переедет
 на новый адрес. Настройки, пароли и список игр при обновлении сохраняются.
 
 Повторный запуск `sh install.sh` тоже обновляет до последней версии.
+
+Версии 0.3.23 и старше обновлялись из ветки `main`; начиная с 0.3.24 сохранённый адрес
+сам переключается на релизы, делать ничего не нужно.
 
 ### Удаление, логи, ручной запуск
 
@@ -451,11 +454,21 @@ python deckdrop.py
 
 На Windows и без Steam часть функций просто покажет «недоступно», а страница откроется
 на `http://localhost:8088`. Чтобы не трогать свои папки, укажи отдельные
-`DECKDROP_STATE` и `DECKDROP_GAMES`. Перед коммитом достаточно проверить синтаксис:
+`DECKDROP_STATE` и `DECKDROP_GAMES`. Перед коммитом прогони те же проверки, что и CI:
 
 ```bash
-python -m py_compile deckdrop.py
+python -m pyflakes deckdrop.py
+python tests/smoke.py
 ```
+
+`tests/smoke.py` запускает сервер во временной папке и проверяет, что страница и API
+отвечают, а файл по-прежнему подходит для обновления уже установленных копий.
+
+**Выпуск версии.** Подними `__version__` в `deckdrop.py` и влей в `main`. GitHub Actions
+([`release.yml`](.github/workflows/release.yml)) прогонит проверки, создаст тег `vX.Y.Z`
+и релиз с `deckdrop.py` и `install.sh`; кнопка «Обновить утилиту» у всех возьмёт его.
+Коммиты без смены версии релиз не создают, их проверяет только
+[`ci.yml`](.github/workflows/ci.yml).
 
 [`install.sh`](install.sh) — установщик для дека, принимает ссылку на `deckdrop.py`
 первым аргументом или в `DECKDROP_SRC`.
