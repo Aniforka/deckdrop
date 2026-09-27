@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussions / Вопросы и обсуждения
+    url: https://github.com/Aniforka/deckdrop/discussions
+    about: How to set it up, ideas to talk over, sharing your setup / Как настроить, идеи для обсуждения, ваши настройки
+  - name: Installation guide / Инструкция по установке
+    url: https://github.com/Aniforka/deckdrop#readme
+    about: Install, update and common problems / Установка, обновление и частые проблемы

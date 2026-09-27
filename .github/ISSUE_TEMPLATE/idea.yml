@@ -1,0 +1,28 @@
+name: Idea / Идея
+description: Suggest a feature or an improvement / Предложить новую возможность или улучшение
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        You can write in English or Russian. For open-ended questions, Discussions is a better place.
+        Писать можно по-английски или по-русски. Для вопросов и обсуждений лучше подходит Discussions.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do? / Что хочется сделать?
+      description: The situation, not the solution yet. / Опиши ситуацию, а не сразу решение.
+      placeholder: When I download a game with a patch, I have to… / Когда качаю игру с патчем, приходится…
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could DeckDrop help? / Как DeckDrop мог бы помочь?
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else / Что-то ещё
+      description: Examples, screenshots, similar tools. / Примеры, скриншоты, похожие программы.
