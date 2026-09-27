@@ -2,6 +2,8 @@
 
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 
 from .config import GAMES_DIR
@@ -29,23 +31,51 @@ def sd_mounts():
     return out
 
 
-def disks():
-    """[{id, label, root, free, total}] - internal first, then removable media."""
-    res = []
+# Mounts and free space are looked up once per DISKS_TTL, not by every caller: one poll of
+# the page asks for them from game_roots(), for every game card and every task.
+DISKS_TTL = 2.0
+_DISKS = {"at": -DISKS_TTL, "scan": None}
+_DISKS_LOCK = threading.Lock()
 
-    def add(disk_id, label, root):
+
+def _scan_disks():
+    """(disks, mounts): disks as (id, label or None for the internal one, root, resolved root, free, total)."""
+    mounts = sd_mounts()
+    out = []
+    for disk_id, label, root in [("internal", None, GAMES_DIR)] + [("sd:" + m.name, lb, m / "Games")
+                                                                     for lb, m in mounts]:
         probe = root if root.exists() else root.parent
         try:
             u = shutil.disk_usage(probe)
             free, total = u.free, u.total
         except OSError:
             free = total = None
-        res.append({"id": disk_id, "label": label, "root": str(root), "free": free, "total": total})
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        out.append((disk_id, label, root, resolved, free, total))
+    resolved_mounts = []
+    for label, m in mounts:
+        try:
+            resolved_mounts.append((label, m.resolve()))
+        except OSError:
+            continue
+    return out, resolved_mounts
 
-    add("internal", tr("disk.internal"), GAMES_DIR)
-    for label, mount in sd_mounts():
-        add("sd:" + mount.name, label, mount / "Games")
-    return res
+
+def _disks_scan():
+    now = time.monotonic()
+    with _DISKS_LOCK:
+        if _DISKS["scan"] is None or now - _DISKS["at"] >= DISKS_TTL:
+            _DISKS.update(at=now, scan=_scan_disks())
+        return _DISKS["scan"]
+
+
+def disks():
+    """[{id, label, root, free, total}] - internal first, then removable media."""
+    return [{"id": disk_id, "label": label or tr("disk.internal"), "root": str(root), "free": free, "total": total}
+            for disk_id, label, root, _, free, total in _disks_scan()[0]]
 
 
 def root_for(disk_id):
@@ -65,19 +95,16 @@ def game_roots():
 
 def disk_label_for(path):
     p = Path(path).resolve()
+    scan, mounts = _disks_scan()
     best = None
-    for d in disks():
-        r = Path(d["root"]).resolve()
+    for _, label, _, r, _, _ in scan:
         if (r == p or r in p.parents) and (best is None or len(str(r)) > len(str(best[0]))):
-            best = (r, d["label"])
+            best = (r, label or tr("disk.internal"))
     if best:
         return best[1]
-    for label, mount in sd_mounts():          # imported game on a card, outside <mount>/Games
-        try:
-            if mount.resolve() in p.parents:
-                return label
-        except OSError:
-            continue
+    for label, mount in mounts:               # imported game on a card, outside <mount>/Games
+        if mount in p.parents:
+            return label
     return tr("disk.internal") if inside(Path.home(), p) else tr("disk.own_folder")
 
 

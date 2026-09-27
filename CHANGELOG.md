@@ -6,6 +6,32 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.4.2 — 2026-09-28
+
+### English
+
+**Changed**
+- An open page costs the Deck far less, and no longer grows with the size of your games. Each
+  update used to look through every game's folders again; now a game is looked at only when its
+  files change. Measured on a test library: 5 games 16 → 0.8 ms per update, 30 games 122 → 5 ms,
+  100 games 311 → 16 ms, i.e. from about a third of a CPU core down to under 2% with 100 games.
+- Free space and memory cards are checked once per update instead of once per game and task.
+- A page in a hidden tab (a locked phone, another app or browser tab) stops asking the Deck for
+  updates and catches up the moment it is shown again. A visible page still updates every second.
+
+### Русский
+
+**Изменено**
+- Открытая страница нагружает дек гораздо меньше, и нагрузка больше не растёт с размером игр.
+  Раньше каждое обновление заново перебирало папки всех игр, теперь игра просматривается, только
+  когда её файлы изменились. На тестовой библиотеке одно обновление: 5 игр — 16 → 0,8 мс,
+  30 игр — 122 → 5 мс, 100 игр — 311 → 16 мс, то есть при 100 играх с трети ядра до менее чем 2%.
+- Свободное место и карты памяти проверяются один раз за обновление, а не для каждой игры
+  и каждого задания.
+- Страница в свёрнутой вкладке (телефон заблокирован, открыто другое приложение или вкладка)
+  перестаёт опрашивать дек и сразу обновляется, когда её снова открывают. Видимая страница
+  по-прежнему обновляется раз в секунду.
+
 ## 0.4.1 — 2026-09-27
 
 ### English

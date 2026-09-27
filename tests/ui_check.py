@@ -50,9 +50,24 @@ def main():
                 errors = []
                 page.on("pageerror", lambda e: errors.append(str(e)))
                 page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+                polls = []
+                page.on("request", lambda r: "/api/state" in r.url and polls.append(r.url))
                 page.goto(f"http://127.0.0.1:{app.port}/")
                 page.wait_for_timeout(1200)
                 seen = [page.inner_text("body")]
+                # a hidden tab (phone locked, another app) must not poll the Deck; shown again, it catches up
+                page.evaluate("Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});"
+                              "document.dispatchEvent(new Event('visibilitychange'))")
+                page.wait_for_timeout(300)
+                polls.clear()
+                page.wait_for_timeout(2500)
+                hidden_polls = len(polls)
+                page.evaluate("Object.defineProperty(document, 'hidden', {configurable: true, get: () => false});"
+                              "document.dispatchEvent(new Event('visibilitychange'))")
+                page.wait_for_timeout(400)
+                shown_polls = len(polls) - hidden_polls
+                if hidden_polls or not shown_polls:
+                    errors.append(f"polling: {hidden_polls} while hidden, {shown_polls} once shown")
                 for tab in ("#tabArch", "#tabMedia", "#tabSettings", "#tabGames"):
                     page.click(tab)
                     page.wait_for_timeout(600)

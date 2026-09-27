@@ -102,11 +102,12 @@ def list_games():
             disk = disk_label_for(d)
             rels = find_exes(d)
             rec_exe = recommend(rels)
-            steam_names = [idx[str((d / r).resolve())]["name"] for r in rels if str((d / r).resolve()) in idx]
+            fulls = {r: str((d / r).resolve()) for r in rels}
+            steam_names = [idx[fulls[r]]["name"] for r in rels if fulls[r] in idx]
             names = name_candidates(d, rels, steam_names)
             exes = []
             for rel in rels:
-                full = str((d / rel).resolve())
+                full = fulls[rel]
                 sc = idx.get(full)
                 rec = added.get(full, {})
                 appid = (sc or {}).get("appid") or rec.get("appid")

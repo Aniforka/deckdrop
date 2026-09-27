@@ -496,7 +496,8 @@ look, ❌ broken or ℹ️ for your information, with a line on what to do:
 - **the Deck**: processor, memory, SteamOS version;
 - **DeckDrop itself**: memory, threads, open files, uptime, average CPU since the start;
 - **page updates**: what one update of the open page costs; the page asks once a second, so
-  this is also the load of simply keeping the page open;
+  this is also the load of simply keeping the page open (a hidden tab on a phone or PC asks
+  nothing);
 - **speed**: Mega decryption and checksum, unpacking zip, writing to each disk (a 64 MB test file
   flushed to the disk and removed right away).
 

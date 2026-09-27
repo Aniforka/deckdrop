@@ -33,15 +33,18 @@ STEAM_LANGS = {"english": "en", "russian": "ru", "ukrainian": "uk", "german": "d
 _local = threading.local()
 _catalogs = {}
 _steam = {"at": 0.0, "lang": None}
+_available = []             # filled on first use: the catalogs do not change while DeckDrop runs
 
 
 def available():
     """Languages that have a catalog, e.g. ("en", "ru")."""
-    if bundle.FILES is not None:
-        names = [k for k in bundle.FILES if re.fullmatch(r"i18n/\w+\.json", k)]
-    else:
-        names = ["i18n/" + p.name for p in Path(__file__).parent.glob("*.json")]
-    return tuple(sorted(n[5:-5] for n in names))
+    if not _available:
+        if bundle.FILES is not None:
+            names = [k for k in bundle.FILES if re.fullmatch(r"i18n/\w+\.json", k)]
+        else:
+            names = ["i18n/" + p.name for p in Path(__file__).parent.glob("*.json")]
+        _available.append(tuple(sorted(n[5:-5] for n in names)))
+    return _available[0]
 
 
 def catalog(lang):
