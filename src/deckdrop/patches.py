@@ -11,7 +11,7 @@ from pathlib import Path
 from .archives import NeedsPassword, try_extract
 from .config import CACHE_DIR, log
 from .detect import game_exe_path
-from .games import game_dirs
+from .games import game_folder
 from .i18n import tr
 from .paths import archive_ext, safe_name
 from .state import STATE, STATE_LOCK, save_state
@@ -19,16 +19,6 @@ from .storage import inside
 
 
 UPLOAD_TMP = ".deckdrop-upload-"
-
-
-def game_folder(game_dir):
-    """The folder of a game DeckDrop lists: one in a DeckDrop root, or one imported by hand."""
-    if not (game_dir or "").strip():
-        raise ValueError(tr("files.not_game"))
-    g = Path(game_dir).resolve()
-    if not g.is_dir() or not any(g == Path(d).resolve() for d, _ in game_dirs()):
-        raise ValueError(tr("files.not_game"))
-    return g
 
 
 def game_target_dir(game_dir, exe, rel):

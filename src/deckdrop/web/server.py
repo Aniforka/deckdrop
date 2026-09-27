@@ -1,6 +1,8 @@
 """HTTP server: the page and the JSON API."""
 
+import ipaddress
 import json
+import os
 import re
 import secrets
 import socket
@@ -45,7 +47,7 @@ from ..steam.compat import compat_tools
 from ..steam.shortcuts import rename_shortcut, set_compat_for
 from ..storage import disks, root_for
 from ..update import self_update
-from .page import render
+from .page import csp, render
 
 
 def local_urls():
@@ -68,20 +70,112 @@ def public_settings():
     return out
 
 
+# names a page on the home network is opened by; anything else in Host is a DNS rebinding attempt
+LAN_SUFFIXES = (".local", ".lan", ".home", ".home.arpa", ".internal", ".intranet", ".localdomain",
+                ".localhost", ".box", ".ts.net")
+JSON_LIMIT = 1 << 20
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+
+def extra_hosts():
+    """DECKDROP_HOSTS: more names the page may be opened by ("deck.example.org", ".example.org", "*")."""
+    return [h.strip().lower() for h in re.split(r"[\s,;]+", os.environ.get("DECKDROP_HOSTS", "")) if h.strip()]
+
+
+def host_ok(host):
+    """Is the Host header an address on the home network, or a name of this Deck?
+
+    Blocks DNS rebinding: a web page on evil.example that re-resolves its own name to the
+    Deck's IP could otherwise read and drive the API as if it were on the same site.
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return True                               # HTTP/1.0 clients, curl -H 'Host:'
+    m = re.fullmatch(r"\[([0-9a-f:.]+)\](?::\d+)?|([^:\[\]]+)(?::\d+)?", host)
+    if not m:
+        return False
+    name = (m.group(1) or m.group(2)).rstrip(".")
+    try:
+        ipaddress.ip_address(name)
+        return True                               # a bare IP is never a rebinding target
+    except ValueError:
+        pass
+    if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*", name):
+        return False
+    extra = extra_hosts()
+    if "*" in extra:
+        return True
+    for h in extra:
+        if name == h.lstrip(".") or (h.startswith(".") and name.endswith(h)):
+            return True
+    own = socket.gethostname().lower()
+    return ("." not in name or name in (own, own + ".local", "localhost")
+            or name.endswith(LAN_SUFFIXES))
+
+
+def origin_ok(origin, host):
+    """A browser request from another site carries its Origin; only this page may change things."""
+    if not origin:
+        return True                               # not a browser, or a same-origin GET
+    try:
+        u = urllib.parse.urlparse(origin)
+    except ValueError:
+        return False
+    return bool(u.netloc) and u.netloc.lower() == (host or "").strip().lower()
+
+
+def update_url_ok(url):
+    """Self update runs whatever it downloads: plain http only from the home network."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme == "https":
+        return bool(u.hostname)
+    if u.scheme != "http" or not u.hostname:
+        return False
+    name = u.hostname.lower()
+    try:
+        ip = ipaddress.ip_address(name)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return "." not in name or name.endswith((".local", ".lan", ".home", ".home.arpa", ".localhost"))
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = 300                                 # a stalled client must not hold a thread forever
 
     def parse_request(self):
         # every answer, the page and API errors alike, speaks the language of this device
         ok = super().parse_request()
         if ok:
             i18n.set_current(i18n.for_request(self.headers)[0])
+            if not self.request_allowed():
+                self.close_connection = True
+                self.send_json({"error": tr("err.forbidden_origin")}, 403)
+                return False
         return ok
+
+    def request_allowed(self):
+        host = self.headers.get("Host")
+        if not host_ok(host):
+            log(f"{self.address_string()} refused: Host {host!r} is not on the home network "
+                f"(allow it with DECKDROP_HOSTS)")
+            return False
+        if self.command not in ("GET", "HEAD") and not origin_ok(self.headers.get("Origin"), host):
+            log(f"{self.address_string()} refused: {self.command} from {self.headers.get('Origin')!r}")
+            return False
+        return True
 
     def log_message(self, fmt, *args):
         line = args[0] if args else ""
         if "/api/state" not in line and "/thumb" not in line:
-            log(f"{self.address_string()} {fmt % args}")
+            # the gallery token rides in ?t= for <img> and <video>; keep it out of the journal
+            msg = re.sub(r"([?&]t=)[^&\s\"]+", r"\1***", fmt % args)
+            log(f"{self.address_string()} {msg}")
 
     # ---- helpers
     def _send(self, code, body, ctype, extra=None):
@@ -89,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
-        for k, v in (extra or {}).items():
+        for k, v in dict(SECURITY_HEADERS, **(extra or {})).items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -98,12 +192,26 @@ class Handler(BaseHTTPRequestHandler):
     def send_json(self, obj, code=200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
+    def content_length(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0:
+            raise ValueError("Content-Length")
+        return n
+
     def read_json(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(n) or b"{}")
+        n = self.content_length()
+        if n > JSON_LIMIT:
+            raise ValueError(tr("err.too_big"))
+        body = json.loads(self.rfile.read(n) or b"{}")
+        if not isinstance(body, dict):
+            raise ValueError("JSON")
+        return body
 
     def read_body_to(self, path, job=None):
-        total = int(self.headers.get("Content-Length") or 0)
+        total = self.content_length()
         remaining = total
         with open(path, "wb") as f:
             while remaining > 0:
@@ -164,6 +272,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "private, max-age=3600")
         self.send_header("Connection", "close")
+        for k, v in SECURITY_HEADERS.items():
+            self.send_header(k, v)
         if code == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         if download_name:
@@ -193,8 +303,9 @@ class Handler(BaseHTTPRequestHandler):
         path, q = self.query()
         try:
             if path == "/":
-                self._send(200, render(i18n.current()).encode(), "text/html; charset=utf-8",
-                           {"Vary": "Cookie", "Cache-Control": "no-cache"})
+                lang = i18n.current()
+                self._send(200, render(lang).encode(), "text/html; charset=utf-8",
+                           {"Vary": "Cookie", "Cache-Control": "no-cache", "Content-Security-Policy": csp(lang)})
             elif path == "/api/state":
                 with LOCK:
                     jobs = [j.to_dict() for j in JOBS.values()]
@@ -281,7 +392,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path, _ = self.query()
         try:
-            body = self.read_json()
+            try:
+                body = self.read_json()
+            except ValueError:
+                self.close_connection = True      # the body may be left unread
+                raise
             s = lambda k, d="": str(body.get(k, d) or d)  # noqa: E731
             if path == "/api/download":
                 self.send_json(start_download(s("url"), s("disk") or None).to_dict())
@@ -406,6 +521,8 @@ class Handler(BaseHTTPRequestHandler):
                 url = (s("url") or STATE.get("update_url") or UPDATE_URL_DEFAULT).strip()
                 if not re.match(r"^https?://", url):
                     raise ValueError(tr("err.need_url"))
+                if not update_url_ok(url):
+                    raise ValueError(tr("update.need_https"))
                 if url != STATE.get("update_url"):
                     set_state(update_url=url)
                 note, new_port, updated = self_update(url)
@@ -424,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/upload/"):
                 name = safe_name(path[len("/api/upload/"):])
                 job = new_job("upload", name, root_for(self.q1(q, "disk")) if self.q1(q, "disk") else None)
-                job.total = int(self.headers.get("Content-Length") or 0)
+                job.total = self.content_length()
                 job.status = "uploading"
                 dest, part = reserve_path(job.root / "_inbox", name)
                 job.work = str(part)
@@ -439,7 +556,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=carry(finish), args=(job, dest), daemon=True).start()
                 self.send_json(job.to_dict())
             elif path == "/api/art/upload":
-                n = int(self.headers.get("Content-Length") or 0)
+                n = self.content_length()
                 if n > 25 << 20:
                     raise ValueError(tr("err.too_big_25"))
                 data = self.rfile.read(n)

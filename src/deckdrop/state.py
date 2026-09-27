@@ -45,15 +45,24 @@ def load_state():
             STATE.update(data)
     except (OSError, ValueError):
         pass
+    try:
+        if STATE_FILE.exists() and STATE_FILE.stat().st_mode & 0o077:
+            STATE_FILE.chmod(0o600)               # earlier versions left it readable by everyone
+    except OSError:
+        pass
     if str(STATE.get("update_url") or "").strip().lower() in UPDATE_URL_LEGACY:
         STATE["update_url"] = UPDATE_URL_DEFAULT
 
 
 def save_state():
+    # the file holds the admin PIN, archive passwords and proxy credentials: owner only
     with STATE_LOCK:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(STATE, ensure_ascii=False, indent=1), "utf-8")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(STATE, ensure_ascii=False, indent=1))
         os.replace(tmp, STATE_FILE)
 
 
@@ -78,12 +87,48 @@ def update_added(exe, **kv):
         save_state()
 
 
+class Throttle:
+    """Slows down guessing a secret, across all connections at once.
+
+    Every wrong answer costs a second. After FREE wrong answers in a row the next try is refused
+    outright for a while, doubling up to a minute, so a 4-digit PIN takes days, not an hour.
+    The right answer resets it.
+    """
+    FREE = 5
+    MAX_WAIT = 60
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fails = 0
+        self.until = 0.0
+
+    def check(self, ok_fn, wrong_msg):
+        with self.lock:
+            wait = self.until - time.time()
+        if wait > 0:
+            time.sleep(1)
+            raise PermissionError(tr("err.too_many_attempts", s=int(wait) + 1))
+        if ok_fn():
+            with self.lock:
+                self.fails, self.until = 0, 0.0
+            return
+        with self.lock:
+            self.fails += 1
+            if self.fails >= self.FREE:
+                self.until = time.time() + min(self.MAX_WAIT, 2 ** (self.fails - self.FREE))
+        time.sleep(1)
+        raise PermissionError(wrong_msg)
+
+
+PIN_THROTTLE = Throttle()
+MEDIA_THROTTLE = Throttle()
+
+
 def check_pin(pin):
     stored = str(STATE.get("admin_pin") or "")
-    ok = bool(stored) and hmac.compare_digest(str(pin or ""), stored)
-    if not ok:
-        time.sleep(1)  # slow down guessing
-        raise PermissionError(tr("err.wrong_pin"))
+    given = str(pin or "")
+    PIN_THROTTLE.check(lambda: bool(stored) and hmac.compare_digest(given.encode("utf-8"), stored.encode("utf-8")),
+                       tr("err.wrong_pin"))
 
 
 def ensure_pin():
@@ -107,9 +152,8 @@ def media_login(password):
     rec = STATE.get("media_pw")
     if not rec:
         raise PermissionError(tr("media.pw_not_set"))
-    if not hmac.compare_digest(pw_hash(password, rec["salt"])["hash"], rec["hash"]):
-        time.sleep(1)
-        raise PermissionError(tr("err.wrong_password"))
+    MEDIA_THROTTLE.check(lambda: hmac.compare_digest(pw_hash(password, rec["salt"])["hash"], rec["hash"]),
+                         tr("err.wrong_password"))
     token = secrets.token_urlsafe(24)
     now = time.time()
     for t, exp in list(MEDIA_TOKENS.items()):

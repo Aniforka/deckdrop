@@ -20,7 +20,9 @@ from .steam.compat import compat_for, compat_label, compat_mapping
 from .steam.library import shortcuts_index
 from .steam.session import session_env
 from .steam.shortcuts import queue_pending
-from .storage import disk_label_for, game_roots, import_allowed, imported_dirs, inside, inside_any
+from .storage import (
+    disk_label_for, game_roots, import_allowed, import_dir_allowed, imported_dirs, inside, inside_any,
+)
 
 
 def add_to_steam(game_dir, exe, name=None, tool=None):
@@ -68,6 +70,16 @@ def add_to_steam(game_dir, exe, name=None, tool=None):
         queue_pending(op="compat", exe=str(p), tool=tool)
     threading.Thread(target=carry(art_worker), args=(str(p), False, True), daemon=True).start()
     return tr("addsteam.queued", name=name)
+
+
+def game_folder(game_dir):
+    """The folder of a game DeckDrop lists: one in a DeckDrop root, or one imported by hand."""
+    if not (game_dir or "").strip():
+        raise ValueError(tr("files.not_game"))
+    g = Path(game_dir).resolve()
+    if not g.is_dir() or not any(g == Path(d).resolve() for d, _ in game_dirs()):
+        raise ValueError(tr("files.not_game"))
+    return g
 
 
 def game_dirs():
@@ -195,6 +207,8 @@ def import_game(path):
         raise ValueError(tr("import.already_inside"))
     if d in imported_dirs():
         raise ValueError(tr("import.already_added"))
+    if not import_dir_allowed(d):
+        raise ValueError(tr("import.not_allowed"))
     exes = find_exes(d)
     if not exes:
         raise ValueError(tr("import.no_exe", name=d.name))
@@ -238,7 +252,7 @@ def import_candidates():
         d = p.parent
         if str(d) in seen or any(inside(r, p) for r in game_roots() if r.exists()):
             continue
-        if d in imported or not import_allowed(d):
+        if d in imported or not import_dir_allowed(d):
             continue
         seen.add(str(d))
         out.append({"exe": exe, "dir": str(d), "name": sc.get("name"), "appid": sc.get("appid"),

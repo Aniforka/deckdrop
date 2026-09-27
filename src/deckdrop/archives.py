@@ -123,10 +123,38 @@ def flatten(d):
             break
 
 
+def drop_escaping_links(target):
+    """Remove symlinks from an unpacked archive that lead outside of it.
+
+    tar, 7z and rar can carry links; one pointing at ~/.config or / would let a later file
+    upload, patch or save import write through it. Links inside the game (Linux libs) stay.
+    """
+    root = Path(target).resolve()
+    dropped = 0
+    for dirpath, dirs, files in os.walk(root):
+        for name in dirs + files:
+            p = Path(dirpath) / name
+            if not p.is_symlink():
+                continue
+            try:
+                dest = (p.parent / os.readlink(p)).resolve()
+                ok = dest == root or root in dest.parents
+            except (OSError, RuntimeError):
+                ok = False
+            if not ok:
+                p.unlink()
+                dropped += 1
+        dirs[:] = [d for d in dirs if not (Path(dirpath) / d).is_symlink()]
+    if dropped:
+        log(f"{root}: removed {dropped} link(s) pointing outside the archive")
+    return dropped
+
+
 def try_extract(path, target, password):
     """Extract into a fresh dir; on failure remove the partial dir and re-raise."""
     try:
         extract(path, target, password)
+        drop_escaping_links(target)
     except Exception:
         shutil.rmtree(target, ignore_errors=True)
         raise

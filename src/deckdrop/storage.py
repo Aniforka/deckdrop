@@ -4,7 +4,8 @@ import os
 import shutil
 from pathlib import Path
 
-from .config import GAMES_DIR
+from . import bundle
+from .config import CACHE_DIR, GAMES_DIR, STATE_FILE, STEAM_ROOT
 from .i18n import tr
 from .state import STATE
 
@@ -95,7 +96,7 @@ def imported_dirs():
             p = Path(raw).resolve()
         except OSError:
             continue
-        if p.is_dir():
+        if p.is_dir() and import_dir_allowed(p):
             out.append(p)
     return out
 
@@ -106,6 +107,42 @@ IMPORT_ROOTS = (Path.home(), Path("/run/media"), Path("/media"), Path("/mnt"))
 
 def import_allowed(path):
     return any(inside(r, path) for r in IMPORT_ROOTS if r.exists())
+
+
+def _private_dirs():
+    """Where the user's keys, settings and autostart live: never part of a game."""
+    home = Path.home()
+    out = [home / x for x in (".ssh", ".gnupg", ".pki", ".config", ".local/bin", ".local/share/applications",
+                              ".local/share/systemd", ".local/share/kwalletd", ".local/share/keyrings")]
+    out += [STEAM_ROOT / "userdata", STEAM_ROOT / "config", STATE_FILE.parent, CACHE_DIR]
+    if bundle.PATH:
+        out.append(Path(bundle.PATH).resolve().parent)
+    return out
+
+
+def import_dir_allowed(d):
+    """May this folder become one imported game?
+
+    Files can be uploaded into a game and a game can be deleted, so a game folder must not be
+    the home folder or anything above it, a whole disk, a folder holding DeckDrop's own games or
+    Steam, nor sit among the user's keys and settings.
+    """
+    try:
+        d = Path(d).resolve()
+    except OSError:
+        return False
+    if not import_allowed(d) or inside(d, Path.home()):
+        return False
+    try:
+        if os.path.ismount(d):
+            return False
+    except OSError:
+        return False
+    if any(r.exists() and d == r.resolve() for r in IMPORT_ROOTS):
+        return False
+    if any(inside(d, x) for x in [GAMES_DIR, STEAM_ROOT, *game_roots()]):
+        return False
+    return not any(inside(x, d) or inside(d, x) for x in _private_dirs())
 
 
 def inside_any(path):
