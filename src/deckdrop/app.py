@@ -6,6 +6,7 @@ from http.server import ThreadingHTTPServer
 
 from . import __version__
 from .config import FFMPEG, GAMES_DIR, PORT, STEAM_ROOT, log
+from .diagnostics import PENDING_THREAD
 from .service import install, uninstall
 from .state import STATE, ensure_pin, load_state
 from .steam.cdp import CDP
@@ -24,7 +25,7 @@ def main():
         log(f"new admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
     (default_root() / "_inbox").mkdir(parents=True, exist_ok=True)
     CDP.ensure_marker()
-    threading.Thread(target=pending_loop, daemon=True).start()
+    threading.Thread(target=pending_loop, name=PENDING_THREAD, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True
     st = CDP.status()

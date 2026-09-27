@@ -65,6 +65,14 @@ def main():
                 status, body = get(port, path)
                 assert status == 200, path
                 json.loads(body)
+            # Settings -> Performance: the self-check runs and its report comes out of the template,
+            # which a built file carries inside itself
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/perf/check", data=b"{}",
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                assert json.loads(r.read())["items"], "self-check"
+            status, body = get(port, "/api/perf/report?kind=check")
+            assert status == 200 and body.startswith(b"# ") and b"{{" not in body, "self-check report"
             print(f"smoke ok: {SCRIPT.name} on port {port}")
         finally:
             proc.terminate()

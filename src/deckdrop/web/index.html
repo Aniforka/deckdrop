@@ -79,6 +79,11 @@
   <div class="frow"><label for="sUpd">{{set.update.url}}</label><input id="sUpd" type="text" data-set="update_url" autocomplete="off"></div>
   <div class="frow"><label>{{set.pin.change}}</label><div class="row wrap"><input id="sPinOld" type="password" inputmode="numeric" placeholder="{{set.pin.current}}" autocomplete="off"><input id="sPinNew" type="password" inputmode="numeric" placeholder="{{set.pin.new}}" autocomplete="off"><button class="sm" id="sPinGo">{{set.pin.go}}</button></div></div>
  </div>
+ <div class="card"><h2>{{set.perf.title}} <span class="acts"><a id="perfDl" hidden download title="{{set.perf.download}}"><button class="ghost sm" aria-label="{{set.perf.download}}">⤓</button></a></span></h2>
+  <div class="hint">{{set.perf.hint}}</div>
+  <div class="row wrap"><button class="ghost sm" id="perfCheck">{{set.perf.check}}</button><button class="ghost sm" id="perfBench">{{set.perf.bench}}</button><button class="ghost sm" id="perfCopy" hidden>{{set.perf.copy}}</button></div>
+  <div id="perfRes"></div>
+ </div>
  <div class="card"><h2>{{set.about.title}}</h2><div class="hint" id="sInfo"></div></div>
 </div>
 <footer><span id="ffm"></span><span class="acts"><button class="ghost sm" id="mediaReset">{{footer.media_reset}}</button><button class="ghost sm" id="update">{{footer.update}}</button></span></footer>

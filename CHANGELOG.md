@@ -6,6 +6,42 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.4.1 — 2026-09-27
+
+### English
+
+**Added**
+- **Settings → Performance**, measured on the Deck itself:
+  - **Self-check**: autostart, background tasks, the settings file, free space and writing on
+    every disk, leftovers of downloads, Steam and its shortcuts, Steam control, queued Steam
+    changes, games whose files are gone, unpacking tools, Mega decryption, ffmpeg, the internet,
+    the update link, VNDB and errors in the log. Each item says what is wrong and what to do.
+  - **Measure the load**: how much CPU DeckDrop and the whole Deck use right now, the Deck's
+    power draw from the battery, the memory DeckDrop takes, what one page update costs, and the
+    speed of Mega decryption, zip unpacking and writing to each disk.
+  - **Copy report**: the result as text, for a message or a GitHub issue; the small **⤓**
+    button downloads it as a Markdown file, laid out by the template `src/deckdrop/web/report.md`.
+
+**Fixed**
+- Rows of buttons in Settings (proxy, PIN) had a large empty gap under them.
+
+### Русский
+
+**Добавлено**
+- **«Настройки» → «Производительность»**, всё измеряется на самом деке:
+  - **Самопроверка**: автозапуск, фоновые задачи, файл настроек, место и запись на каждом диске,
+    остатки загрузок, Steam и его ярлыки, управление Steam, отложенные изменения Steam, игры,
+    чьи файлы пропали, распаковщики, расшифровка Mega, ffmpeg, интернет, адрес обновления, VNDB
+    и ошибки в журнале. У каждого пункта написано, что не так и что делать.
+  - **Замерить нагрузку**: сколько процессора сейчас берут DeckDrop и весь дек, потребление дека
+    по датчику батареи, сколько памяти занимает DeckDrop, во что обходится одно обновление
+    страницы, скорость расшифровки Mega, распаковки zip и записи на каждый диск.
+  - **Скопировать отчёт**: результат текстом, для сообщения или issue на GitHub; маленькая
+    кнопка **⤓** скачивает его файлом Markdown по шаблону `src/deckdrop/web/report.md`.
+
+**Исправлено**
+- Под рядами кнопок в настройках (прокси, PIN) была большая пустая полоса.
+
 ## 0.4.0 — 2026-09-27
 
 ### English

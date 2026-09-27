@@ -21,6 +21,7 @@ from ..art.covers import (
 )
 from ..config import CACHE_DIR, CHUNK, FFMPEG, GAMES_DIR, MIME, PORT, UPDATE_URL_DEFAULT, log
 from ..detect import game_exe_path
+from ..diagnostics import benchmark, report_md, self_check
 from ..downloads import cancel_all, cancel_job, start_download, start_mega_downloads
 from ..games import (
     add_to_steam, delete_game, game_info, import_candidates, import_game, list_games,
@@ -58,6 +59,18 @@ def local_urls():
     except OSError:
         pass
     return urls
+
+
+def state_payload():
+    """What the page polls every second: jobs, games, disks and settings."""
+    with LOCK:
+        jobs = [j.to_dict() for j in JOBS.values()]
+    return {"jobs": jobs[::-1], "games": list_games(), "urls": local_urls(),
+            "disks": disks(), "games_dir": str(GAMES_DIR),
+            "version": __version__, "ffmpeg": bool(FFMPEG),
+            "media_set": bool(STATE.get("media_pw")),
+            "settings": public_settings(), "compat_tools": compat_tools(),
+            "cdp": CDP.status(), "pending": len(STATE.get("pending") or [])}
 
 
 def public_settings():
@@ -196,14 +209,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, render(i18n.current()).encode(), "text/html; charset=utf-8",
                            {"Vary": "Cookie", "Cache-Control": "no-cache"})
             elif path == "/api/state":
-                with LOCK:
-                    jobs = [j.to_dict() for j in JOBS.values()]
-                self.send_json({"jobs": jobs[::-1], "games": list_games(), "urls": local_urls(),
-                                "disks": disks(), "games_dir": str(GAMES_DIR),
-                                "version": __version__, "ffmpeg": bool(FFMPEG),
-                                "media_set": bool(STATE.get("media_pw")),
-                                "settings": public_settings(), "compat_tools": compat_tools(),
-                                "cdp": CDP.status(), "pending": len(STATE.get("pending") or [])})
+                self.send_json(state_payload())
             elif path == "/add":  # GET /add?url=... for share shortcuts / bookmarklets
                 start_download(self.q1(q, "url"), self.q1(q, "disk") or None)
                 self.redirect("/")
@@ -221,6 +227,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not f:
                     raise FileNotFoundError(tr("covers.none_in_slot"))
                 self.send_file(f)
+            elif path == "/api/perf/report":
+                name, text = report_md(self.q1(q, "kind"))
+                self._send(200, text.encode("utf-8"), "text/markdown; charset=utf-8",
+                           {"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
             elif path == "/api/inbox/stats":
                 self.send_json(inbox_clear(dry_run=True))
             elif path == "/api/archives":
@@ -401,6 +411,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError(tr("pin.format"))
                 set_state(admin_pin=new)
                 self.send_json({"ok": True})
+            elif path == "/api/perf/check":
+                self.send_json({"ok": True, **self_check()})
+            elif path == "/api/perf/bench":
+                self.send_json({"ok": True, **benchmark(state_payload)})
             elif path == "/api/update":
                 check_pin(body.get("pin"))
                 url = (s("url") or STATE.get("update_url") or UPDATE_URL_DEFAULT).strip()
