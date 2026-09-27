@@ -1,8 +1,9 @@
 name: CI
 
+# every branch is checked on push, so a change is verified before it reaches main;
+# releases are cut only from main (release.yml)
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
