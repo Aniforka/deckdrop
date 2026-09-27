@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from .config import GAMES_DIR
+from .i18n import tr
 from .state import STATE
 
 
@@ -41,7 +42,7 @@ def disks():
             free = total = None
         res.append({"id": disk_id, "label": label, "root": str(root), "free": free, "total": total})
 
-    add("internal", "Внутренний", GAMES_DIR)
+    add("internal", tr("disk.internal"), GAMES_DIR)
     for label, mount in sd_mounts():
         add("sd:" + mount.name, label, mount / "Games")
     return res
@@ -77,7 +78,7 @@ def disk_label_for(path):
                 return label
         except OSError:
             continue
-    return "Внутренний" if inside(Path.home(), p) else "своя папка"
+    return tr("disk.internal") if inside(Path.home(), p) else tr("disk.own_folder")
 
 
 def inside(root, path):

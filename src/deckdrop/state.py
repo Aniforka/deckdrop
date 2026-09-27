@@ -9,6 +9,7 @@ import threading
 import time
 
 from .config import CEF_ENABLED, STATE_FILE, UPDATE_URL_DEFAULT, UPDATE_URL_LEGACY
+from .i18n import tr
 
 
 STATE_LOCK = threading.RLock()
@@ -82,7 +83,7 @@ def check_pin(pin):
     ok = bool(stored) and hmac.compare_digest(str(pin or ""), stored)
     if not ok:
         time.sleep(1)  # slow down guessing
-        raise PermissionError("неверный PIN")
+        raise PermissionError(tr("err.wrong_pin"))
 
 
 def ensure_pin():
@@ -105,10 +106,10 @@ MEDIA_TOKENS = {}  # token -> expiry
 def media_login(password):
     rec = STATE.get("media_pw")
     if not rec:
-        raise PermissionError("пароль медиа ещё не задан")
+        raise PermissionError(tr("media.pw_not_set"))
     if not hmac.compare_digest(pw_hash(password, rec["salt"])["hash"], rec["hash"]):
         time.sleep(1)
-        raise PermissionError("неверный пароль")
+        raise PermissionError(tr("err.wrong_password"))
     token = secrets.token_urlsafe(24)
     now = time.time()
     for t, exp in list(MEDIA_TOKENS.items()):

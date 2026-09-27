@@ -7,6 +7,7 @@ import urllib.error
 
 from .archives import finish
 from .config import CHUNK
+from .i18n import carry, tr
 from .jobs import CANCELLABLE, JOBS, LOCK, drop_part, fail, new_job
 from .mega import mega_folder_files, mega_parse_link, run_mega_download, run_mega_folder
 from .net import dl_proxy, http_get, resolve_url
@@ -18,14 +19,13 @@ def run_download(job, url):
     part = None
     try:
         if job.cancel:
-            raise RuntimeError("отменено")
+            raise RuntimeError(tr("status.cancelled"))
         job.status = "resolving"
         real = resolve_url(url)
         with http_get(real, proxy=dl_proxy()) as r:
             ctype = (r.headers.get("Content-Type") or "").lower()
             if "text/html" in ctype:
-                raise RuntimeError("по ссылке отдаётся HTML-страница, а не файл: нужна прямая "
-                                   "ссылка, или скачай на ПК и перетащи файл сюда")
+                raise RuntimeError(tr("dl.html_page"))
             name = filename_from_response(r.headers, r.geturl())
             job.total = int(r.headers.get("Content-Length") or 0)
             dest, part = reserve_path(job.root / "_inbox", name)
@@ -36,14 +36,14 @@ def run_download(job, url):
             with open(part, "wb") as f:
                 while True:
                     if job.cancel:
-                        raise RuntimeError("отменено")
+                        raise RuntimeError(tr("status.cancelled"))
                     chunk = r.read(CHUNK)
                     if not chunk:
                         break
                     f.write(chunk)
                     job.done += len(chunk)
         if job.total and job.done != job.total:
-            raise RuntimeError(f"файл скачан не полностью: {job.done} из {job.total} байт")
+            raise RuntimeError(tr("dl.incomplete", done=job.done, total=job.total))
         part.rename(dest)
         part = None
         job.file = str(dest)
@@ -63,10 +63,10 @@ def run_download(job, url):
 def start_download(url, disk=None):
     url = url.strip()
     if not re.match(r"^https?://", url, re.I):
-        raise ValueError("нужна ссылка вида http(s)://")
+        raise ValueError(tr("err.need_url"))
     link = mega_parse_link(url)         # Mega is encrypted and has its own downloader
     job = new_job("download", url, root_for(disk) if disk else None)
-    threading.Thread(target=run_mega_download if link else run_download,
+    threading.Thread(target=carry(run_mega_download if link else run_download),
                      args=(job, link or url), daemon=True).start()
     return job
 
@@ -102,14 +102,14 @@ def start_mega_downloads(url, nodes, disk=None):
     """Queue what was picked in a Mega folder: one file as usual, several as one game."""
     link = mega_parse_link(url)
     if not link:
-        raise ValueError("это не ссылка на Mega")
+        raise ValueError(tr("mega.not_mega"))
     if link["kind"] == "file":
         return [start_download(url, disk).to_dict()]
     data = mega_folder_files(link)
     files = {f["h"]: f for f in data["files"]}
     picked = [files[h] for h in dict.fromkeys(nodes or []) if h in files]
     if not picked:
-        raise ValueError("не выбрано ни одного файла")
+        raise ValueError(tr("mega.nothing_picked"))
     root = root_for(disk) if disk else None
     if len(picked) == 1:
         f = picked[0]
@@ -120,5 +120,5 @@ def start_mega_downloads(url, nodes, disk=None):
         job = new_job("download", safe_name(data["name"]), root)
         job.total = sum(f["size"] for f in picked)
         target, args = run_mega_folder, (job, link, picked)
-    threading.Thread(target=target, args=args, daemon=True).start()
+    threading.Thread(target=carry(target), args=args, daemon=True).start()
     return [job.to_dict()]

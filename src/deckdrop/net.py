@@ -12,12 +12,12 @@ import urllib.parse
 import urllib.request
 
 from .config import UA
+from .i18n import tr
 from .state import STATE
 
 
-SOCKS_ERR = {1: "общая ошибка прокси", 2: "прокси запретил соединение", 3: "сеть недоступна",
-             4: "хост недоступен", 5: "соединение отклонено", 6: "истёк TTL",
-             7: "команда не поддерживается", 8: "тип адреса не поддерживается"}
+SOCKS_ERR = {1: "socks.general", 2: "socks.not_allowed", 3: "socks.net_unreachable", 4: "socks.host_unreachable",
+             5: "socks.refused", 6: "socks.ttl", 7: "socks.command", 8: "socks.address_type"}
 
 
 def mask_proxy(url):
@@ -46,7 +46,7 @@ def dl_proxy():
 
 
 def net_reason(e):
-    """Network exception -> short Russian explanation with a hint about blocking."""
+    """Network exception -> a short explanation for the user, with a hint about blocking."""
     err = e
     while isinstance(err, urllib.error.URLError) and not isinstance(err, urllib.error.HTTPError):
         err = err.reason if isinstance(err.reason, BaseException) else err.reason
@@ -56,15 +56,15 @@ def net_reason(e):
     text = str(err) or type(e).__name__
     low = text.lower()
     if "reset" in low or "104" in low or "10054" in low:
-        return f"соединение сброшено ({text}). Обычно это блокировка со стороны сети: попробуй прокси в настройках"
+        return tr("net.reset", detail=text)
     if "timed out" in low or "timeout" in low:
-        return f"нет ответа ({text}). Похоже на блокировку или медленную сеть: попробуй прокси в настройках"
+        return tr("net.timeout", detail=text)
     if "name or service" in low or "getaddrinfo" in low or "resolve" in low:
-        return f"имя хоста не разрешается ({text}): проверь интернет на деке"
+        return tr("net.dns", detail=text)
     if "refused" in low:
-        return f"соединение отклонено ({text})"
+        return tr("net.refused", detail=text)
     if "certificate" in low or "ssl" in low:
-        return f"ошибка TLS ({text})"
+        return tr("net.tls", detail=text)
     return text
 
 
@@ -73,7 +73,7 @@ def _recv_exact(sock, n):
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
         if not chunk:
-            raise ConnectionError("прокси закрыл соединение")
+            raise ConnectionError(tr("socks.closed"))
         buf += chunk
     return buf
 
@@ -91,20 +91,20 @@ def socks5_connect(px, dest_host, dest_port, timeout):
         sock.sendall(bytes([5, len(methods)]) + methods)
         ver, method = _recv_exact(sock, 2)
         if ver != 5:
-            raise ConnectionError("это не SOCKS5-прокси")
+            raise ConnectionError(tr("socks.not_socks5"))
         if method == 2:
             u = urllib.parse.unquote(px.username or "").encode()
             pw = urllib.parse.unquote(px.password or "").encode()
             sock.sendall(bytes([1, len(u)]) + u + bytes([len(pw)]) + pw)
             if _recv_exact(sock, 2)[1] != 0:
-                raise ConnectionError("прокси не принял логин или пароль")
+                raise ConnectionError(tr("socks.auth_failed"))
         elif method != 0:
-            raise ConnectionError("прокси требует авторизацию, которую я не умею")
+            raise ConnectionError(tr("socks.auth_unsupported"))
         host = dest_host.encode("idna")
         sock.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host + struct.pack(">H", dest_port))
         rep = _recv_exact(sock, 4)
         if rep[1] != 0:
-            raise ConnectionError("прокси: " + SOCKS_ERR.get(rep[1], f"код {rep[1]}"))
+            raise ConnectionError(tr("socks.error", reason=tr(SOCKS_ERR[rep[1]]) if rep[1] in SOCKS_ERR else tr("socks.code", code=rep[1])))
         atyp = rep[3]
         if atyp == 1:
             _recv_exact(sock, 4)
@@ -177,7 +177,7 @@ def net_open(url, data=None, headers=None, timeout=60, proxy=None, method=None, 
                 raw.close()
                 raise urllib.error.HTTPError(url, raw.status, raw.reason, raw.headers, None)
             return Resp(raw, url)
-        raise RuntimeError("слишком много перенаправлений")
+        raise RuntimeError(tr("net.redirects"))
     handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy} if px else {})
     opener = urllib.request.build_opener(handler)
     raw = opener.open(urllib.request.Request(url, data=data, headers=h, method=method), timeout=timeout)

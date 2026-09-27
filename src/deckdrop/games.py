@@ -12,6 +12,7 @@ from .detect import (
     clean_title, find_exes, game_exe_path, is_linux_exe, name_candidates, pretty_name,
     recommend, strip_exe_ext,
 )
+from .i18n import carry, tr
 from .paths import dir_size, split_ext
 from .state import STATE, STATE_LOCK, save_state, update_added
 from .steam.cdp import CDP
@@ -43,12 +44,12 @@ def add_to_steam(game_dir, exe, name=None, tool=None):
         if tool:
             CDP.set_compat(appid, tool)
         update_added(str(p), appid=appid, name=name, compat=tool, via="cdp", art=False)
-        threading.Thread(target=art_worker, args=(str(p), False, False), daemon=True).start()
-        return f"добавлено как «{name}»" + (f", {compat_label(tool)}" if tool else ", нативно без Proton")
+        threading.Thread(target=carry(art_worker), args=(str(p), False, False), daemon=True).start()
+        return tr("addsteam.done", name=name) + ", " + (compat_label(tool) if tool else tr("addsteam.native"))
     # fallback: steamos-add-to-steam names the shortcut after the file; fix it up later via CEF
     env, running = session_env()
     if not running:
-        raise RuntimeError("Steam не запущен: открой библиотеку на деке и нажми ещё раз")
+        raise RuntimeError(tr("steam.not_running"))
     ok = False
     if shutil.which("steamos-add-to-steam"):
         res = subprocess.run(["steamos-add-to-steam", str(p)], capture_output=True, text=True, env=env, timeout=60)
@@ -58,20 +59,19 @@ def add_to_steam(game_dir, exe, name=None, tool=None):
     if not ok:
         steam = shutil.which("steam")
         if not steam:
-            raise RuntimeError("Steam не найден: добавь вручную в Desktop Mode")
+            raise RuntimeError(tr("steam.not_found"))
         subprocess.Popen([steam, "steam://addnonsteamgame/" + urllib.parse.quote(str(p))],
                          env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     update_added(str(p), name=name, compat=tool, via="steamos", art=False)
     queue_pending(op="rename", exe=str(p), name=name)
     if tool:
         queue_pending(op="compat", exe=str(p), tool=tool)
-    threading.Thread(target=art_worker, args=(str(p), False, True), daemon=True).start()
-    return ("добавлено; имя «" + name + "» и Proton применятся, когда включится управление Steam "
-            "(после перезагрузки дека)")
+    threading.Thread(target=carry(art_worker), args=(str(p), False, True), daemon=True).start()
+    return tr("addsteam.queued", name=name)
 
 
 def game_dirs():
-    """(dir, imported) for every card on the Игры tab: folders inside the roots, plus imported games."""
+    """(dir, imported) for every card on the Games tab: folders inside the roots, plus imported games."""
     out = []
     for root in game_roots():
         if not root.is_dir():
@@ -162,7 +162,7 @@ def adopt_steam_settings(d):
         except OSError:
             covers = []
         if covers:
-            kv.update(art=True, art_source="steam", art_note="обложки взяты из Steam")
+            kv.update(art=True, art_source="steam", art_note=tr("import.art_from_steam"))
         update_added(full, **kv)
         adopted.append({"exe": rel, "name": kv.get("name"), "compat": kv.get("compat"),
                         "covers": covers, "appid": appid})
@@ -176,29 +176,28 @@ def import_game(path):
     """
     raw = (path or "").strip().strip('"').strip("'")
     if not raw:
-        raise ValueError("укажи путь к файлу запуска игры")
+        raise ValueError(tr("import.need_path_long"))
     p = Path(raw).expanduser()
     if not p.is_absolute():
-        raise ValueError("нужен полный путь, начиная с /")
+        raise ValueError(tr("import.need_absolute"))
     try:
         p = p.resolve()
     except OSError as e:
-        raise ValueError(f"не смог разобрать путь: {e}") from e
+        raise ValueError(tr("import.bad_path", error=e)) from e
     if not p.exists():
-        raise ValueError(f"по этому пути ничего нет: {p}")
+        raise ValueError(tr("import.nothing_there", path=p))
     if not import_allowed(p):
-        raise ValueError("добавлять можно только из домашней папки или с подключённых носителей")
+        raise ValueError(tr("import.not_allowed"))
     d = p if p.is_dir() else p.parent
     if not p.is_dir() and d.name.lower() in NESTED_DIRS and d.parent != d and import_allowed(d.parent):
         d = d.parent                      # .../Fate/bin/Fate.exe -> the game folder is .../Fate
     if any(r.resolve() == d or inside(r, d) for r in game_roots() if r.exists()):
-        raise ValueError("эта игра и так внутри папки игр DeckDrop, она уже есть в списке")
+        raise ValueError(tr("import.already_inside"))
     if d in imported_dirs():
-        raise ValueError("эта игра уже добавлена")
+        raise ValueError(tr("import.already_added"))
     exes = find_exes(d)
     if not exes:
-        raise ValueError(f"в папке {d.name} не нашёл ни одного exe, sh или x86_64. "
-                         "Укажи путь к самому файлу запуска")
+        raise ValueError(tr("import.no_exe", name=d.name))
     with STATE_LOCK:
         STATE["imported"] = sorted({*(STATE.get("imported") or []), str(d)})
         save_state()
@@ -214,7 +213,7 @@ def unimport_game(path):
         cur = list(STATE.get("imported") or [])
         keep = [x for x in cur if Path(x).resolve() != p]
         if len(keep) == len(cur):
-            raise ValueError("эта игра не из добавленных вручную")
+            raise ValueError(tr("import.not_imported"))
         STATE["imported"] = keep
         STATE["hidden"] = [h for h in STATE.get("hidden", []) if Path(h).resolve() != p]
         STATE["added"] = {k: v for k, v in STATE.get("added", {}).items() if not inside(p, k)}
@@ -253,7 +252,7 @@ def game_dir_path(path):
     if p in imported_dirs():
         return p
     if not inside_any(p) or p.name.startswith("_") or not p.is_dir() or any(p == r.resolve() for r in game_roots()):
-        raise ValueError("неверный путь")
+        raise ValueError(tr("err.bad_path"))
     return p
 
 
@@ -285,11 +284,11 @@ def delete_game(path, remove_shortcut=False):
             for appid in appids:
                 try:
                     CDP.remove_shortcut(appid)
-                    notes.append(f"ярлык {appid} убран из Steam")
+                    notes.append(tr("delete.shortcut_removed", appid=appid))
                 except Exception as e:  # noqa: BLE001
-                    notes.append(f"ярлык {appid}: {e}")
+                    notes.append(tr("delete.shortcut_error", appid=appid, error=e))
         elif appids:
-            notes.append("ярлык в Steam остался: управление Steam недоступно")
+            notes.append(tr("delete.shortcut_kept"))
     shutil.rmtree(p)
     inbox = p.parent / "_inbox"
     if inbox.is_dir():

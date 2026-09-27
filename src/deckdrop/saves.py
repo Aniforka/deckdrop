@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__
 from .config import CACHE_DIR, CHUNK
 from .detect import game_exe_path, is_linux_exe, norm_title, pretty_name
+from .i18n import tr
 from .paths import dir_size
 from .steam.library import compatdata_dir
 from .steam.shortcuts import resolve_appid
@@ -101,7 +102,7 @@ def import_saves_zip(game_dir, exe, zip_path):
         try:
             manifest = json.loads(z.read("manifest.json"))
         except KeyError:
-            raise ValueError("это не бэкап сейвов DeckDrop (нет manifest.json)") from None
+            raise ValueError(tr("saves.not_backup")) from None
         for info in z.infolist():
             if info.is_dir() or info.filename == "manifest.json":
                 continue

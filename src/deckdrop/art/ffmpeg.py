@@ -7,12 +7,13 @@ import subprocess
 from pathlib import Path
 
 from ..config import CACHE_DIR, FFMPEG
+from ..i18n import tr
 
 
 def ff_run(inp, in_ext, args, out_ext, timeout=120):
     """Run ffmpeg on bytes -> bytes (via temp files). Raises RuntimeError on failure."""
     if not FFMPEG:
-        raise RuntimeError("ffmpeg не найден")
+        raise RuntimeError(tr("ffmpeg.missing"))
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tag = secrets.token_hex(4)
     src = CACHE_DIR / f"ff_{tag}_in.{in_ext}"
@@ -66,7 +67,7 @@ def ff_logo(title):
     """Transparent PNG with the title as text (Steam 'logo' asset)."""
     font = find_font(title)
     if not font:
-        raise RuntimeError("шрифт не найден")
+        raise RuntimeError(tr("ffmpeg.no_font"))
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tag = secrets.token_hex(4)
     txt = CACHE_DIR / f"logo_{tag}.txt"

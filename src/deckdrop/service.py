@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, bundle
+from .i18n import tr
 from .state import STATE, ensure_pin, load_state
 from .web.server import local_urls
 
@@ -25,8 +26,8 @@ WantedBy=default.target
 
 def install():
     if bundle.PATH is None:
-        raise SystemExit("из исходников сервис не ставится: собери файл (python tools/build.py) "
-                         "и запусти python3 dist/deckdrop.py --install")
+        raise SystemExit("the service is not installed from src/: build the file (python tools/build.py) "
+                         "and run python3 dist/deckdrop.py --install")
     load_state()
     ensure_pin()
     unit_dir = Path.home() / ".config" / "systemd" / "user"
@@ -38,8 +39,8 @@ def install():
     # restart, not `enable --now`: on an upgrade the unit is already active and
     # would keep running the old code
     subprocess.run(["systemctl", "--user", "restart", "deckdrop.service"], check=True)
-    print(f"DeckDrop {__version__} installed and running:", " ".join(local_urls()))
-    print(f"Admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
+    print(tr("install.running", v=__version__, urls=" ".join(local_urls())))
+    print(tr("install.pin", pin=STATE["admin_pin"]))
 
 
 def uninstall():
@@ -48,4 +49,4 @@ def uninstall():
         (Path.home() / ".config" / "systemd" / "user" / "deckdrop.service").unlink()
     except OSError:
         pass
-    print("DeckDrop removed")
+    print(tr("install.removed"))

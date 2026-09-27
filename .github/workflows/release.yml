@@ -2,12 +2,14 @@ name: Release
 
 # A release is cut when __version__ in src/deckdrop/__init__.py changes on main:
 # the package is built into one deckdrop.py, tagged vX.Y.Z and published with install.sh.
+# The release notes are the version's section of CHANGELOG.md, followed by GitHub's list of
+# merged pull requests and a link to the full diff against the previous release.
 # Installed copies update from releases/latest/download/deckdrop.py.
 
 on:
   push:
     branches: [main]
-    paths: [src/**, tools/build.py, install.sh]
+    paths: [src/**, tools/build.py, install.sh, CHANGELOG.md]
   workflow_dispatch:
 
 concurrency:
@@ -42,11 +44,15 @@ jobs:
       - name: Build and check
         if: steps.ver.outputs.new == 'true'
         run: |
+          python tools/changelog.py --check
           python -m pip install pyflakes
           python -m pyflakes src tools tests
           python tools/build.py
           DECKDROP_SKIP_USER_DATA=1 python -m unittest discover -s tests
           python tests/smoke.py dist/deckdrop.py
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+          python tests/ui_check.py dist/deckdrop.py
 
       - name: User data survives an update (required)
         if: steps.ver.outputs.new == 'true'
@@ -58,7 +64,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ steps.ver.outputs.version }}
         run: |
+          python tools/changelog.py "$VER" > notes.md
           gh release create "v$VER" dist/deckdrop.py install.sh \
             --target "$GITHUB_SHA" \
             --title "DeckDrop $VER" \
+            --notes-file notes.md \
             --generate-notes

@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from .config import LINUX_EXTS, SKIP_EXE
+from .i18n import tr
 from .state import STATE
 from .storage import inside_any
 
@@ -67,12 +68,12 @@ def is_linux_exe(path):
 def game_exe_path(game_dir, exe):
     p = (Path(game_dir) / exe).resolve()
     if not inside_any(p) or not p.is_file():
-        raise ValueError("неверный путь")
+        raise ValueError(tr("err.bad_path"))
     return p
 
 
 def norm_title(s):
-    return re.sub(r"[^a-z0-9а-яё]+", "", s.lower())
+    return re.sub("[^a-z0-9\u0430-\u044f\u0451]+", "", s.lower())   # keeps Cyrillic titles
 
 
 def find_exes(d):

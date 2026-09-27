@@ -12,6 +12,7 @@ from .archives import NeedsPassword, try_extract
 from .config import CACHE_DIR, log
 from .detect import game_exe_path
 from .games import game_dirs
+from .i18n import tr
 from .paths import archive_ext, safe_name
 from .state import STATE, STATE_LOCK, save_state
 from .storage import inside
@@ -23,10 +24,10 @@ UPLOAD_TMP = ".deckdrop-upload-"
 def game_folder(game_dir):
     """The folder of a game DeckDrop lists: one in a DeckDrop root, or one imported by hand."""
     if not (game_dir or "").strip():
-        raise ValueError("это не папка игры")
+        raise ValueError(tr("files.not_game"))
     g = Path(game_dir).resolve()
     if not g.is_dir() or not any(g == Path(d).resolve() for d, _ in game_dirs()):
-        raise ValueError("это не папка игры")
+        raise ValueError(tr("files.not_game"))
     return g
 
 
@@ -35,15 +36,15 @@ def game_target_dir(game_dir, exe, rel):
     game = game_folder(game_dir)
     exe_path = game_exe_path(str(game), exe)
     if not inside(game, exe_path):
-        raise ValueError("этот exe не из папки игры")
+        raise ValueError(tr("files.exe_outside"))
     rel = (rel or "").strip().replace("\\", "/")
     if rel.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", rel):
-        raise ValueError("путь нужен относительный, от папки с exe: например data/patch или ../")
+        raise ValueError(tr("files.need_relative"))
     target = (exe_path.parent / rel).resolve() if rel else exe_path.parent
     if not inside(game, target):
-        raise ValueError("путь выходит за пределы папки игры")
+        raise ValueError(tr("files.escape"))
     if target.exists() and not target.is_dir():
-        raise ValueError(f"«{target.name}» это файл, а не папка")
+        raise ValueError(tr("files.is_file", name=target.name))
     return game, target
 
 
@@ -73,18 +74,18 @@ def game_file_upload(game_dir, exe, rel, name, replace, write_body):
     """
     game, target = game_target_dir(game_dir, exe, rel)
     if not (name or "").strip():
-        raise ValueError("у файла нет имени")
+        raise ValueError(tr("files.no_name"))
     fname = safe_name(name)
     dest = target / fname
     if dest.is_dir():
-        raise ValueError(f"«{fname}» здесь уже папка, файл с таким именем не положить")
+        raise ValueError(tr("files.is_dir", name=fname))
     existed = dest.exists()
     if existed and not replace:
         raise FileExistsError(fname)
     created = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
     if not inside(game, target):
-        raise ValueError("путь выходит за пределы папки игры")
+        raise ValueError(tr("files.escape"))
     tmp = target / f"{UPLOAD_TMP}{secrets.token_hex(4)}.part"
     backup = None
     try:
@@ -142,7 +143,7 @@ def _patch_get(tok):
     with PATCH_LOCK:
         info = PATCHES.get(tok or "")
     if not info:
-        raise ValueError("архив уже убран: загрузи его ещё раз")
+        raise ValueError(tr("patch.gone"))
     return info
 
 
@@ -222,7 +223,7 @@ def _patch_unpack(tok, password=None):
                 continue
         else:
             return {"token": tok, "name": info["name"], "needs_password": True,
-                    "error": "неверный пароль" if password else None}
+                    "error": tr("err.wrong_password") if password else None}
         info["archive"].unlink(missing_ok=True)             # everything is in the stage now
         return _patch_view(tok)
     except Exception:
@@ -235,7 +236,7 @@ def patch_upload(game_dir, exe, rel, name, write_body):
     game_target_dir(game_dir, exe, rel)                     # refuse a bad path before reading the body
     fname = safe_name(name or "")
     if not (name or "").strip() or not archive_ext(fname):
-        raise ValueError("это не архив: подойдут zip, 7z, rar и tar")
+        raise ValueError(tr("files.not_archive"))
     _patch_sweep()
     tok = secrets.token_hex(8)
     (PATCH_DIR / tok).mkdir(parents=True)
@@ -253,7 +254,7 @@ def patch_upload(game_dir, exe, rel, name, write_body):
 
 def patch_unlock(tok, password, remember=False):
     if not password:
-        raise ValueError("введи пароль")
+        raise ValueError(tr("err.enter_password"))
     res = _patch_unpack(tok, password)
     if remember and not res.get("needs_password"):
         with STATE_LOCK:
@@ -291,7 +292,7 @@ def patch_apply(tok, strip=False, backup=True):
     info = _patch_get(tok)
     stage = PATCH_DIR / tok / "x"
     if not stage.is_dir():
-        raise ValueError("архив ещё не распакован: сначала нужен пароль")
+        raise ValueError(tr("patch.need_password_first"))
     try:
         game, target = game_target_dir(info["game"], info["exe"], info["dir"])
         _, single = _stage_top(stage)

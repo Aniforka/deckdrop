@@ -10,7 +10,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from .. import __version__
+from .. import __version__, i18n
 from ..archives import (
     archive_cleanup, archive_delete, archive_extract_job, finish, inbox_clear, job_password,
     list_archives,
@@ -26,6 +26,7 @@ from ..games import (
     add_to_steam, delete_game, game_info, import_candidates, import_game, list_games,
     set_hidden, unimport_game,
 )
+from ..i18n import carry, tr
 from ..jobs import JOBS, LOCK, fail, new_job
 from ..media import PLACEHOLDER_SVG, clip_mp4, media_delete, media_item, media_thumb, scan_media
 from ..mega import mega_probe
@@ -44,7 +45,7 @@ from ..steam.compat import compat_tools
 from ..steam.shortcuts import rename_shortcut, set_compat_for
 from ..storage import disks, root_for
 from ..update import self_update
-from .page import PAGE
+from .page import render
 
 
 def local_urls():
@@ -69,6 +70,13 @@ def public_settings():
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def parse_request(self):
+        # every answer, the page and API errors alike, speaks the language of this device
+        ok = super().parse_request()
+        if ok:
+            i18n.set_current(i18n.for_request(self.headers)[0])
+        return ok
 
     def log_message(self, fmt, *args):
         line = args[0] if args else ""
@@ -101,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
             while remaining > 0:
                 chunk = self.rfile.read(min(CHUNK, remaining))
                 if not chunk:
-                    raise ConnectionError("загрузка прервана")
+                    raise ConnectionError(tr("err.upload_cut"))
                 f.write(chunk)
                 remaining -= len(chunk)
                 if job:
@@ -118,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
     def media_auth(self, q):
         token = self.headers.get("X-Media-Token") or self.q1(q, "t")
         if not media_token_ok(token):
-            self.send_json({"error": "нужен пароль медиа", "auth": True}, 401)
+            self.send_json({"error": tr("media.need_password"), "auth": True}, 401)
             return False
         return True
 
@@ -185,7 +193,8 @@ class Handler(BaseHTTPRequestHandler):
         path, q = self.query()
         try:
             if path == "/":
-                self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+                self._send(200, render(i18n.current()).encode(), "text/html; charset=utf-8",
+                           {"Vary": "Cookie", "Cache-Control": "no-cache"})
             elif path == "/api/state":
                 with LOCK:
                     jobs = [j.to_dict() for j in JOBS.values()]
@@ -210,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.split("/")
                 f = art_file_for(int(parts[2]), parts[3]) if len(parts) > 3 and parts[2].isdigit() else None
                 if not f:
-                    raise FileNotFoundError("обложки нет")
+                    raise FileNotFoundError(tr("covers.none_in_slot"))
                 self.send_file(f)
             elif path == "/api/inbox/stats":
                 self.send_json(inbox_clear(dry_run=True))
@@ -228,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
                 out, manifest = build_saves_zip(self.q1(q, "game"), self.q1(q, "exe"))
                 if not manifest["files"]:
                     out.unlink(missing_ok=True)
-                    return self.send_json({"error": "сейвы не найдены: игра ещё не запускалась или хранит их в другом месте"}, 404)
+                    return self.send_json({"error": tr("saves.not_found")}, 404)
                 self.send_file(out, download_name=out.name)
             elif path == "/api/media/status":
                 self.send_json({"set": bool(STATE.get("media_pw"))})
@@ -256,7 +265,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, b"not found", "text/plain")
         except FileNotFoundError as e:
-            self.send_json({"error": f"не найдено: {e}"}, 404)
+            self.send_json({"error": tr("err.not_found", what=e)}, 404)
         except (ValueError, PermissionError) as e:
             self.send_json({"error": str(e)}, 400)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -313,8 +322,8 @@ class Handler(BaseHTTPRequestHandler):
                 source = s("source", "auto")
                 if source not in ("auto", "icon", "vndb"):
                     raise ValueError("source")
-                threading.Thread(target=art_worker, args=(str(p), True, False, source, s("vn") or None), daemon=True).start()
-                self.send_json({"ok": True, "note": "делаю обложки"})
+                threading.Thread(target=carry(art_worker), args=(str(p), True, False, source, s("vn") or None), daemon=True).start()
+                self.send_json({"ok": True, "note": tr("covers.making")})
             elif path == "/api/art/from_exe":
                 self.send_json({"ok": True, **art_from_exe(s("game"), s("exe"), s("slot"))})
             elif path == "/api/art/from_url":
@@ -342,10 +351,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "removed": archive_cleanup()})
             elif path == "/api/media/setup":
                 if STATE.get("media_pw"):
-                    raise PermissionError("пароль уже задан")
+                    raise PermissionError(tr("media.pw_already_set"))
                 pw = s("password")
                 if len(pw) < 4:
-                    raise ValueError("пароль короче 4 символов")
+                    raise ValueError(tr("media.pw_too_short"))
                 set_state(media_pw=pw_hash(pw))
                 self.send_json({"ok": True, "token": media_login(pw)})
             elif path == "/api/media/login":
@@ -357,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif path == "/api/media/delete":
                 if not media_token_ok(self.headers.get("X-Media-Token") or s("token")):
-                    return self.send_json({"error": "нужен пароль медиа", "auth": True}, 401)
+                    return self.send_json({"error": tr("media.need_password"), "auth": True}, 401)
                 check_pin(body.get("pin"))
                 self.send_json({"ok": True, "removed": media_delete(s("id"))})
             elif path == "/api/settings":
@@ -389,18 +398,18 @@ class Handler(BaseHTTPRequestHandler):
                 check_pin(body.get("old"))
                 new = s("new")
                 if not re.fullmatch(r"\d{4,8}", new):
-                    raise ValueError("PIN: от 4 до 8 цифр")
+                    raise ValueError(tr("pin.format"))
                 set_state(admin_pin=new)
                 self.send_json({"ok": True})
             elif path == "/api/update":
                 check_pin(body.get("pin"))
                 url = (s("url") or STATE.get("update_url") or UPDATE_URL_DEFAULT).strip()
                 if not re.match(r"^https?://", url):
-                    raise ValueError("нужна ссылка вида http(s)://")
+                    raise ValueError(tr("err.need_url"))
                 if url != STATE.get("update_url"):
                     set_state(update_url=url)
-                note, new_port = self_update(url)
-                self.send_json({"ok": True, "note": note, "new_port": new_port})
+                note, new_port, updated = self_update(url)
+                self.send_json({"ok": True, "note": note, "new_port": new_port, "updated": updated})
             else:
                 self.send_json({"error": "not found"}, 404)
         except PermissionError as e:
@@ -427,12 +436,12 @@ class Handler(BaseHTTPRequestHandler):
                     part.unlink(missing_ok=True)
                     fail(job, str(e))
                     return self.send_json({"error": str(e)}, 400)
-                threading.Thread(target=finish, args=(job, dest), daemon=True).start()
+                threading.Thread(target=carry(finish), args=(job, dest), daemon=True).start()
                 self.send_json(job.to_dict())
             elif path == "/api/art/upload":
                 n = int(self.headers.get("Content-Length") or 0)
                 if n > 25 << 20:
-                    raise ValueError("файл больше 25 МБ")
+                    raise ValueError(tr("err.too_big_25"))
                 data = self.rfile.read(n)
                 self.send_json({"ok": True, **custom_art(self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "slot"), data)})
             elif path == "/api/game/archive":
@@ -454,10 +463,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "not found"}, 404)
         except FileExistsError as e:
             self.close_connection = True          # the body was not read: don't reuse the connection
-            self.send_json({"error": f"«{e}» уже есть в этой папке", "exists": True}, 409)
+            self.send_json({"error": tr("files.exists", name=e), "exists": True}, 409)
         except (ValueError, zipfile.BadZipFile) as e:
             self.close_connection = True
-            self.send_json({"error": str(e) or "битый zip"}, 400)
+            self.send_json({"error": str(e) or tr("err.bad_zip")}, 400)
         except Exception as e:  # noqa: BLE001
             self.close_connection = True
             log(f"PUT {path} failed: {e!r}")
