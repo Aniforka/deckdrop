@@ -25,4 +25,4 @@ Env overrides: DECKDROP_PORT (8088), DECKDROP_GAMES (~/Games), DECKDROP_STATE (s
                DECKDROP_DISKS (extra roots "label=path;..."), DECKDROP_CEF=0 (no Steam control),
                DECKDROP_CEF_PORT (8080), DECKDROP_EXTRACT=0 (don't unpack), DECKDROP_KEEP=0
 """
-__version__ = "0.4.1"
+__version__ = "0.4.2"

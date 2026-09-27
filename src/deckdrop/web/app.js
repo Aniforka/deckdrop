@@ -154,8 +154,16 @@ function render(s){if(!s)return;
  const dsel=$('#disk');const dsig=JSON.stringify([s.disks,(s.settings||{}).default_disk]);
  if(dsig!==sigDisks&&document.activeElement!==dsel){const cur=dsel.value||(s.settings&&s.settings.default_disk)||'internal';dsel.innerHTML=(s.disks||[]).map(d=>`<option value="${esc(d.id)}" ${d.id===cur?'selected':''}>${esc(d.label)} · ${t('disk.free',{size:fmt(d.free)})}</option>`).join('');dsel.hidden=(s.disks||[]).length<2;sigDisks=dsig;}
  if(view.kind==='game')renderGame(s);else renderList(s);}
-async function refresh(){try{lastState=await(await fetch('/api/state')).json();render(lastState);}catch(e){}}
-applyView(parseHash());refresh();setInterval(refresh,1000);
+// polled every second while the page is visible; a hidden tab (phone locked, another app or tab) asks
+// nothing and catches up the moment it is shown again. One request at a time, so a slow Deck is not
+// piled on; a refresh asked for meanwhile (e.g. right after an action) runs as soon as it returns.
+let polling=false,again=false;
+async function refresh(){if(polling){again=true;return;}polling=true;
+ try{lastState=await(await fetch('/api/state')).json();render(lastState);}catch(e){}
+ finally{polling=false;if(again){again=false;refresh();}}}
+function tick(){if(!document.hidden)refresh();}
+document.addEventListener('visibilitychange',tick);
+applyView(parseHash());refresh();setInterval(tick,1000);
 // ---- game page extras: folder size, covers with preview/replace, saves
 const LAB={portrait:[t('slot.portrait'),t('slot.portrait_size'),'2/3'],landscape:[t('slot.landscape'),'920×430','920/430'],hero:[t('slot.hero'),'1920×620','1920/620'],logo:[t('slot.logo'),t('slot.logo_size'),'16/5'],icon:[t('slot.icon'),t('slot.icon_size'),'1/1']};
 function loadGameExtras(g){gameInfo=null;const ch=chosenExe(g);if(g.exes.length)setupFiles(g);
