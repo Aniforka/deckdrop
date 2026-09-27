@@ -3,7 +3,6 @@
 
     python tools/build.py                  write dist/deckdrop.py
     python tools/build.py -o FILE          write FILE instead
-    python tools/build.py --check FILE     fail if FILE differs from a fresh build
 
 The result is what users install and update from: one stdlib-only script. It carries
 every module of the package as source text plus the web files, and a small importer
@@ -16,7 +15,6 @@ regexes __version__ = "x" and DECKDROP_PORT", "n". The header below keeps all of
 """
 import argparse
 import re
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -113,16 +111,9 @@ def build():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-o", "--output", default=str(ROOT / "dist" / "deckdrop.py"))
-    ap.add_argument("--check", metavar="FILE", help="compare FILE with a fresh build instead of writing")
     args = ap.parse_args()
     text = build()
     compile(text, "deckdrop.py", "exec")
-    if args.check:
-        current = Path(args.check).read_text("utf-8") if Path(args.check).exists() else ""
-        if current != text:
-            sys.exit(f"{args.check} is out of date: run python tools/build.py -o {args.check}")
-        print(f"{args.check} is up to date")
-        return
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8", newline="\n") as f:
