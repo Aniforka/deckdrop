@@ -6,6 +6,7 @@
 
 Open a page on your phone or PC, paste a link or drop a file, and the Deck downloads it,
 unpacks it and adds the game to Steam with artwork.
+And your Deck's screenshots and recordings are just as easy to grab onto your phone or PC.
 
 [![Release](https://img.shields.io/github/v/release/Aniforka/deckdrop)](https://github.com/Aniforka/deckdrop/releases/latest)
 [![CI](https://github.com/Aniforka/deckdrop/actions/workflows/ci.yml/badge.svg)](https://github.com/Aniforka/deckdrop/actions/workflows/ci.yml)
