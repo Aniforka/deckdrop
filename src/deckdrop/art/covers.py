@@ -11,6 +11,7 @@ from ..art.ffmpeg import ff_cover, ff_fit_blur, ff_logo, ff_run
 from ..art.images import compose, dominant_color, load_icon, png_encode
 from ..config import FFMPEG, PNG_SIG, VNDB_UA, log
 from ..detect import clean_title, game_exe_path, norm_title, pretty_name
+from ..i18n import tr
 from ..net import net_open, net_reason, proxy_url, with_retries
 from ..state import STATE, added_rec, update_added
 from ..steam.cdp import CDP
@@ -68,7 +69,7 @@ def proxy_test():
     px = proxy_url()
     checks = []
     for host, url in (("api.vndb.org", "https://api.vndb.org/kana/schema"), ("t.vndb.org", "https://t.vndb.org/")):
-        for mode, p in [("напрямую", None)] + ([("через прокси", px)] if px else []):
+        for mode, p in [(tr("net.direct"), None)] + ([(tr("net.via_proxy"), px)] if px else []):
             t0 = time.time()
             try:
                 with net_open(url, headers={"User-Agent": VNDB_UA}, timeout=12, proxy=p) as r:
@@ -76,7 +77,7 @@ def proxy_test():
                 checks.append({"host": host, "mode": mode, "ok": True, "ms": int((time.time() - t0) * 1000)})
             except urllib.error.HTTPError as e:      # an HTTP answer still means we got through
                 checks.append({"host": host, "mode": mode, "ok": True, "ms": int((time.time() - t0) * 1000),
-                               "note": f"ответ HTTP {e.code}"})
+                               "note": tr("net.http_answer", code=e.code)})
             except Exception as e:  # noqa: BLE001
                 checks.append({"host": host, "mode": mode, "ok": False, "error": net_reason(e)})
     return {"proxy": px or "", "checks": checks}
@@ -95,7 +96,7 @@ def vndb_pick(name, vn_id=None):
     if vn_id:
         res = vndb_query(["id", "=", vn_id], 1)
         if not res:
-            raise RuntimeError(f"VNDB: {vn_id} не найден")
+            raise RuntimeError(tr("vndb.not_found", id=vn_id))
         return res[0]
     q = re.sub(r"\b(rus|eng|jpn?|ru|en|jp|russian|english|uncensored|patched|repack|final|full|hd)\b", " ", name, flags=re.I)
     q = re.sub(r"\s+", " ", q).strip()
@@ -125,7 +126,7 @@ def vndb_images(vn, have_icon):
     if vndb_allowed(cover):
         cov = vndb_fetch(cover["url"])
     elif cover.get("url"):
-        notes.append("обложка VNDB отфильтрована как NSFW")
+        notes.append(tr("vndb.nsfw_filtered"))
     shot = None
     if shots:
         shot = vndb_fetch(shots[0]["url"])
@@ -141,14 +142,14 @@ def vndb_images(vn, have_icon):
         try:
             imgs["logo"] = (ff_logo(vn.get("title") or ""), "png")
         except RuntimeError as e:
-            notes.append(f"логотип: {e}")
+            notes.append(tr("covers.logo_failed", error=e))
     else:
         if cov:
             imgs["portrait"] = (cov, "jpg")
         if shot:
             imgs["landscape"] = (shot, "jpg")
             imgs["hero"] = (shot, "jpg")
-        notes.append("без ffmpeg картинки VNDB поставлены как есть")
+        notes.append(tr("vndb.no_ffmpeg"))
     return imgs, notes
 
 
@@ -207,7 +208,7 @@ def art_current(game_dir, exe):
     p = game_exe_path(game_dir, exe)
     appid = resolve_appid(p)
     if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
+        raise ValueError(tr("game.not_in_steam"))
     files = art_files(appid, art_userdata(p))
     rec = added_rec(str(p))
     slots = {}
@@ -224,7 +225,7 @@ def vndb_image_list(vn_id):
     """Cover + screenshots of one VN, for picking a single slot image by hand."""
     res = vndb_query(["id", "=", vn_id], 1)
     if not res:
-        raise RuntimeError(f"VNDB: {vn_id} не найден")
+        raise RuntimeError(tr("vndb.not_found", id=vn_id))
     v = res[0]
     out = []
     cover = v.get("image") or {}
@@ -239,14 +240,14 @@ def vndb_image_list(vn_id):
 def art_from_url(game_dir, exe, slot, url, vn_id=None):
     """Put one VNDB image into one cover slot, fitted/cropped for that slot when ffmpeg is around."""
     if slot not in GRID_SUFFIX:
-        raise ValueError("неизвестный слот обложки")
+        raise ValueError(tr("covers.bad_slot"))
     u = urllib.parse.urlparse(url)
     if u.scheme != "https" or not (u.netloc == "vndb.org" or u.netloc.endswith(".vndb.org")):
-        raise ValueError("картинки можно брать только с vndb.org")
+        raise ValueError(tr("vndb.only_vndb"))
     p = game_exe_path(game_dir, exe)
     appid = resolve_appid(p)
     if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
+        raise ValueError(tr("game.not_in_steam"))
     data = vndb_fetch(url)
     ext = "png" if data[:8] == PNG_SIG else "jpg"
     if FFMPEG:
@@ -272,14 +273,14 @@ def art_from_url(game_dir, exe, slot, url, vn_id=None):
 def art_from_exe(game_dir, exe, slot):
     """Fill one cover slot from the icon inside the executable (or an .ico next to it)."""
     if slot not in GRID_SUFFIX:
-        raise ValueError("неизвестный слот обложки")
+        raise ValueError(tr("covers.bad_slot"))
     p = game_exe_path(game_dir, exe)
     appid = resolve_appid(p)
     if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
+        raise ValueError(tr("game.not_in_steam"))
     icon = load_icon(p)
     if not icon:
-        raise RuntimeError(f"в {p.name} нет иконки, и рядом не нашлось .ico или icon.png")
+        raise RuntimeError(tr("covers.no_icon_in", name=p.name))
     if slot in SIZES:
         w, h = SIZES[slot]
         data = capsule_png(icon, w, h, 0.6 if slot == "portrait" else 0.5)
@@ -293,19 +294,19 @@ def art_from_exe(game_dir, exe, slot):
 def custom_art(game_dir, exe, slot, data):
     """Replace one cover slot with an image uploaded by the user (PNG or JPEG)."""
     if slot not in GRID_SUFFIX:
-        raise ValueError("неизвестный слот обложки")
+        raise ValueError(tr("covers.bad_slot"))
     if data[:8] == PNG_SIG:
         ext = "png"
     elif data[:3] == b"\xff\xd8\xff":
         ext = "jpg"
     else:
-        raise ValueError("нужен PNG или JPEG")
+        raise ValueError(tr("covers.need_png_jpeg"))
     if len(data) > 25 << 20:
-        raise ValueError("файл больше 25 МБ")
+        raise ValueError(tr("err.too_big_25"))
     p = game_exe_path(game_dir, exe)
     appid = resolve_appid(p)
     if not appid:
-        raise ValueError("игра ещё не добавлена в Steam")
+        raise ValueError(tr("game.not_in_steam"))
     how = apply_artwork(appid, art_userdata(p), {slot: (data, ext)})
     update_added(str(p), art=True, art_error=None, art_source="custom")
     return {"slot": slot, "how": how}
@@ -333,7 +334,7 @@ def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=N
     p = Path(exe)
     rec = added_rec(str(p))
     if rec.get("art") and not force and source == "auto":
-        return "обложка уже есть"
+        return tr("covers.already")
     appid = resolve_appid(p, wait=20 if wait_for_shortcut else 0)
     sc = shortcuts_index().get(str(p))
     ud = Path(sc["userdata"]) if sc else None
@@ -353,7 +354,7 @@ def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=N
                     images.update(vimgs)
                     info = {"art_source": "vndb", "vndb_id": vn["id"], "vndb_title": vn.get("title")}
             else:
-                notes.append("VNDB: подходящей новеллы не нашёл")
+                notes.append(tr("vndb.no_match"))
         except Exception as e:  # noqa: BLE001
             notes.append(f"VNDB: {str(e)[:120]}")
             log(f"vndb for {p.name}: {e}")
@@ -364,7 +365,7 @@ def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=N
             if slot not in images:
                 images[slot] = (capsule_png(icon, w, h, 0.6 if slot == "portrait" else 0.5), "png")
     if not images:
-        raise RuntimeError("иконка не найдена ни в exe, ни в папке игры, и VNDB не помог")
+        raise RuntimeError(tr("covers.no_icon_anywhere"))
     how = apply_artwork(appid, ud, images)
     update_added(str(p), art=True, appid=appid, art_error=None, art_note="; ".join(notes) or None, **info)
     return f"{info['art_source']} -> {', '.join(sorted(images))} ({how})" + (f"; {'; '.join(notes)}" if notes else "")

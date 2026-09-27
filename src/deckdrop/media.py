@@ -8,6 +8,7 @@ import subprocess
 import time
 
 from .config import CACHE_DIR, CHUNK, FFMPEG, IMAGE_EXTS, MEDIA_DIRS, VIDEO_EXTS, log
+from .i18n import tr
 from .steam.library import _SC_CACHE, library_folders, shortcuts_index, userdata_dirs
 
 
@@ -65,7 +66,7 @@ def scan_media(force=False):
                         st = f.stat()
                         items.append({"kind": "image", "path": f, "thumb": thumb if thumb.is_file() else None,
                                       "name": f.name, "game": game, "time": int(st.st_mtime), "size": st.st_size})
-        for sub, label in (("clips", "клип"), ("video", "запись")):
+        for sub in ("clips", "video"):
             base = ud / "gamerecordings" / sub
             if not base.is_dir():
                 continue
@@ -77,7 +78,7 @@ def scan_media(force=False):
                 thumb = clip / "thumbnail.jpg"
                 size = sum(f.stat().st_size for f in clip.rglob("*.m4s"))
                 items.append({"kind": "clip", "path": clip, "thumb": thumb if thumb.is_file() else None,
-                              "name": f"{label} {clip.name}", "game": game,
+                              "name": clip.name, "game": game,
                               "time": clip_time(clip.name, clip.stat().st_mtime), "size": size})
     for d in MEDIA_DIRS:
         if not d.is_dir():
@@ -124,7 +125,7 @@ def clip_mp4(item):
         return out
     inits = sorted(clip.rglob("init-stream0.m4s"))
     if not inits:
-        raise FileNotFoundError("в клипе нет фрагментов видео")
+        raise FileNotFoundError(tr("media.clip_empty"))
     vdir = inits[0].parent
 
     def stream(n):
@@ -135,7 +136,7 @@ def clip_mp4(item):
 
     video, audio = stream(0), stream(1)
     if not video:
-        raise FileNotFoundError("в клипе нет фрагментов видео")
+        raise FileNotFoundError(tr("media.clip_empty"))
     tmp_v = out.with_suffix(".v.mp4")
     _concat(video, tmp_v)
     if audio and FFMPEG:

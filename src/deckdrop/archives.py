@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 from .config import AUTO_EXTRACT, CHUNK, KEEP_ARCHIVE, log
+from .i18n import carry, tr
 from .jobs import ACTIVE, JOBS, LOCK, fail, new_job
 from .paths import archive_stem, archive_volume, unique_dir
 from .state import STATE, STATE_LOCK, save_state
@@ -60,7 +61,7 @@ def extract_zip_python(path, target, password=None):
                     shutil.copyfileobj(src, dst, CHUNK)
             except RuntimeError as e:  # "Bad password for file" / "File is encrypted"
                 if "password" in str(e).lower() or "encrypted" in str(e).lower():
-                    raise NeedsPassword("неверный пароль" if password else "архив зашифрован") from e
+                    raise NeedsPassword(tr("err.wrong_password") if password else tr("arch.encrypted")) from e
                 raise
 
 
@@ -69,8 +70,8 @@ def run_tool(cmd):
     if res.returncode != 0:
         msg = (res.stderr or res.stdout).strip()
         if PW_ERR.search(msg):
-            raise NeedsPassword("неверный пароль" if any(a.startswith(("-p", "--passphrase")) for a in cmd[1:])
-                                else "архив зашифрован")
+            raise NeedsPassword(tr("err.wrong_password") if any(a.startswith(("-p", "--passphrase")) for a in cmd[1:])
+                                else tr("arch.encrypted"))
         raise RuntimeError(f"{Path(cmd[0]).name}: {msg[-300:]}")
 
 
@@ -79,14 +80,14 @@ def extract(path, target, password=None):
     low = path.name.lower()
     if low.endswith(".zip"):
         if zip_encrypted(path) and not password:
-            raise NeedsPassword("архив зашифрован")
+            raise NeedsPassword(tr("arch.encrypted"))
         try:
             extract_zip_python(path, target, password)
             return
         except NotImplementedError:
             # AES-encrypted zip: Python can't, bsdtar / 7z can
             if not password:
-                raise NeedsPassword("архив зашифрован") from None
+                raise NeedsPassword(tr("arch.encrypted")) from None
     tools = []
     if shutil.which("bsdtar"):
         tools.append(["bsdtar"] + (["--passphrase", password] if password else []) + ["-xf", str(path), "-C", str(target)])
@@ -95,7 +96,7 @@ def extract(path, target, password=None):
     if shutil.which("unrar") and low.endswith(".rar"):
         tools.append(["unrar", "x", "-y", "-p" + (password or "-"), str(path), str(target) + os.sep])
     if not tools:
-        raise RuntimeError("не найден распаковщик (bsdtar / 7z / unrar)")
+        raise RuntimeError(tr("arch.no_tool"))
     last = None
     for cmd in tools:
         try:
@@ -164,14 +165,14 @@ def finish(job, path, password=None):
         job.status = "done"
         log(f"job {job.id} done: {job.game_dir}")
     except Exception as e:  # noqa: BLE001
-        fail(job, f"ошибка распаковки: {e}")
+        fail(job, tr("arch.extract_failed", error=e))
 
 
 def job_password(job_id, password, remember=False):
     with LOCK:
         job = JOBS.get(job_id)
     if not job or job.status != "needs_password" or not job.file:
-        raise ValueError("это задание не ждёт пароль")
+        raise ValueError(tr("arch.no_password_wait"))
     if remember and password:
         with STATE_LOCK:
             pws = list(STATE.get("archive_passwords") or [])
@@ -181,7 +182,7 @@ def job_password(job_id, password, remember=False):
             save_state()
     job.status = "extracting"
     job.error = None
-    threading.Thread(target=finish, args=(job, Path(job.file), password), daemon=True).start()
+    threading.Thread(target=carry(finish), args=(job, Path(job.file), password), daemon=True).start()
     return job
 
 
@@ -208,17 +209,17 @@ def list_archives():
 def archive_path(path):
     p = Path(path).resolve()
     if not p.is_file() or p.parent.name != "_inbox" or not inside_any(p):
-        raise ValueError("неверный путь")
+        raise ValueError(tr("err.bad_path"))
     return p
 
 
 def archive_extract_job(path):
     p = archive_path(path)
     if archive_volume(p.name) != "primary":
-        raise ValueError("это не архив или не первая его часть")
+        raise ValueError(tr("arch.not_first_part"))
     job = new_job("extract", p.name, p.parent.parent)
     job.file = str(p)
-    threading.Thread(target=finish, args=(job, p), daemon=True).start()
+    threading.Thread(target=carry(finish), args=(job, p), daemon=True).start()
     return job
 
 
@@ -276,6 +277,6 @@ def inbox_clear(dry_run=False):
     if not dry_run:
         for j in jobs:                         # a job waiting for a password just lost its archive
             if j.status == "needs_password" and j.file and not Path(j.file).exists():
-                j.status, j.error = "error", "архив удалён при очистке входящих"
+                j.status, j.error = "error", tr("arch.removed_by_clear")
         log(f"inbox cleared: {out}")
     return out

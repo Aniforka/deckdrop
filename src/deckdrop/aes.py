@@ -57,7 +57,7 @@ def _load_libcrypto():
         except (OSError, AttributeError):
             continue
     _LIB = False
-    log("aes: libcrypto не найдена, расшифровка Mega будет очень медленной")
+    log("aes: libcrypto not found, Mega decryption will be very slow")
     return False
 
 
@@ -65,17 +65,17 @@ def _ossl(cipher, key, iv, data, enc):
     lib, c = _LIB, _CT
     ctx = lib.EVP_CIPHER_CTX_new()
     if not ctx:
-        raise RuntimeError("openssl: нет контекста шифрования")
+        raise RuntimeError("openssl: no cipher context")
     try:
         init = lib.EVP_EncryptInit_ex if enc else lib.EVP_DecryptInit_ex
         upd = lib.EVP_EncryptUpdate if enc else lib.EVP_DecryptUpdate
         if init(ctx, getattr(lib, cipher)(), None, key, iv) != 1:
-            raise RuntimeError("openssl: не приняла ключ")
+            raise RuntimeError("openssl: key rejected")
         lib.EVP_CIPHER_CTX_set_padding(ctx, 0)
         out = c.create_string_buffer(len(data) + 16)
         n = c.c_int(0)
         if upd(ctx, out, c.byref(n), bytes(data), len(data)) != 1:
-            raise RuntimeError("openssl: ошибка шифрования")
+            raise RuntimeError("openssl: cipher failed")
         return out.raw[:n.value]
     finally:
         lib.EVP_CIPHER_CTX_free(ctx)
@@ -116,7 +116,7 @@ _UNSHIFT = [(i % 4) + 4 * (((i // 4) - (i % 4)) % 4) for i in range(16)]
 
 def _expand_key(key):
     if len(key) != 16:
-        raise ValueError(f"ключ AES должен быть 16 байт, а не {len(key)}")
+        raise ValueError(f"an AES key must be 16 bytes, not {len(key)}")
     w = [list(key[i * 4:i * 4 + 4]) for i in range(4)]
     rcon = 1
     for i in range(4, 44):
@@ -165,7 +165,7 @@ def _dec_block(rk, blk):
 
 def _blocks(data):
     if len(data) % 16:
-        raise ValueError("данные для AES должны быть кратны 16 байтам")
+        raise ValueError("AES data must be a multiple of 16 bytes")
     return range(0, len(data), 16)
 
 
@@ -214,7 +214,7 @@ class AesCtr:
             ctx = lib.EVP_CIPHER_CTX_new()
             if lib.EVP_EncryptInit_ex(ctx, lib.EVP_aes_128_ctr(), None, key, iv) != 1:
                 lib.EVP_CIPHER_CTX_free(ctx)
-                raise RuntimeError("openssl: не приняла ключ Mega")
+                raise RuntimeError("openssl: Mega key rejected")
             lib.EVP_CIPHER_CTX_set_padding(ctx, 0)
             self.ctx = ctx
         else:
@@ -226,7 +226,7 @@ class AesCtr:
             out = c.create_string_buffer(len(data) + 16)
             n = c.c_int(0)
             if _LIB.EVP_EncryptUpdate(self.ctx, out, c.byref(n), bytes(data), len(data)) != 1:
-                raise RuntimeError("openssl: ошибка расшифровки")
+                raise RuntimeError("openssl: decryption failed")
             return out.raw[:n.value]
         ks = bytearray(self.buf)
         while len(ks) < len(data):

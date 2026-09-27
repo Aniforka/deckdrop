@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PKG = ROOT / "src" / "deckdrop"
-DATA_EXTS = (".html", ".css", ".js")
+DATA_EXTS = (".html", ".css", ".js", ".json")
 
 BOOT = r'''
 import importlib.abc

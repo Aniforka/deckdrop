@@ -47,6 +47,9 @@ jobs:
           python tools/build.py
           DECKDROP_SKIP_USER_DATA=1 python -m unittest discover -s tests
           python tests/smoke.py dist/deckdrop.py
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+          python tests/ui_check.py dist/deckdrop.py
 
       - name: User data survives an update (required)
         if: steps.ver.outputs.new == 'true'

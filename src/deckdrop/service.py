@@ -25,8 +25,8 @@ WantedBy=default.target
 
 def install():
     if bundle.PATH is None:
-        raise SystemExit("из исходников сервис не ставится: собери файл (python tools/build.py) "
-                         "и запусти python3 dist/deckdrop.py --install")
+        raise SystemExit("the service is not installed from src/: build the file (python tools/build.py) "
+                         "and run python3 dist/deckdrop.py --install")
     load_state()
     ensure_pin()
     unit_dir = Path.home() / ".config" / "systemd" / "user"

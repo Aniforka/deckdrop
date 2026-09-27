@@ -17,6 +17,7 @@ from pathlib import Path
 from .aes import AesCtr, ZERO16, aes_cbc_decrypt, aes_cbc_encrypt, aes_ecb_decrypt
 from .archives import finish, flatten
 from .config import CHUNK, log
+from .i18n import tr
 from .jobs import drop_part, fail
 from .net import dl_proxy, net_open, net_reason, proxy_url
 from .paths import archive_volume, reserve_path, safe_name, split_ext, unique_dir
@@ -32,23 +33,23 @@ MEGA_GATE = threading.Semaphore(1)        # Mega drops parallel transfers from o
 MEGA_FOLDERS = {}                         # folder handle -> (fetched at, listing)
 MEGA_LOCK = threading.Lock()
 MEGA_TTL = 600
-MEGA_ERR = {
-    -1: "внутренняя ошибка Mega, попробуй ещё раз",
-    -2: "ссылка составлена неверно",
-    -3: "Mega просит подождать и повторить",
-    -4: "слишком много запросов, подожди пару минут",
-    -5: "передача не удалась",
-    -6: "слишком много попыток, подожди",
-    -8: "ссылка больше не действует",
-    -9: "файл не найден: ссылку удалили или она набрана с ошибкой",
-    -11: "нет доступа к этой ссылке",
-    -12: "такой файл уже есть",
-    -14: "не подошёл ключ: скопируй ссылку целиком, вместе с частью после решётки",
-    -15: "нужен вход в аккаунт Mega",
-    -16: "аккаунт заблокирован",
-    -17: "исчерпан лимит трафика: подожди несколько часов или включи прокси в настройках",
-    -18: "файл временно недоступен, попробуй позже",
-    -19: "слишком много одновременных соединений",
+MEGA_ERR = {       # Mega API error code -> message key
+    -1: "mega.err.internal",
+    -2: "mega.err.bad_link",
+    -3: "mega.err.retry",
+    -4: "mega.err.rate_limit",
+    -5: "mega.err.transfer",
+    -6: "mega.err.too_many",
+    -8: "mega.err.expired",
+    -9: "mega.err.not_found",
+    -11: "mega.err.access",
+    -12: "mega.err.exists",
+    -14: "mega.err.key",
+    -15: "mega.err.login",
+    -16: "mega.err.blocked",
+    -17: "mega.err.quota",
+    -18: "mega.err.unavailable",
+    -19: "mega.err.connections",
 }
 
 
@@ -63,7 +64,7 @@ def b64u_encode(b):
 
 
 def mega_error(code):
-    return "Mega: " + MEGA_ERR.get(code, f"ошибка {code}")
+    return "Mega: " + (tr(MEGA_ERR[code]) if code in MEGA_ERR else tr("err.code", code=code))
 
 
 def mega_parse_link(url):
@@ -78,8 +79,7 @@ def mega_parse_link(url):
         return None
     frag = u.fragment or ""
     if frag.startswith("P!"):
-        raise ValueError("это ссылка Mega под паролем, DeckDrop такие пока не умеет: "
-                         "открой её в браузере, введи пароль и скопируй обычную ссылку")
+        raise ValueError(tr("mega.password_link"))
     m = re.match(r"^/(file|folder|embed)/([\w-]+)/?$", u.path or "/")
     if m:
         kind = "folder" if m.group(1) == "folder" else "file"
@@ -97,7 +97,7 @@ def mega_parse_link(url):
     if not m.group(2):
         return None
     if not key:
-        raise ValueError("в ссылке Mega нет ключа: скопируй её целиком, вместе с частью после решётки")
+        raise ValueError(tr("mega.no_key"))
     return {"kind": kind, "handle": m.group(2), "key": key, "node": node}
 
 
@@ -136,7 +136,7 @@ def mega_api(payload, folder=None, tries=5):
                 raise RuntimeError(mega_error(res["e"]))
             return res
         if not isinstance(res, int):
-            raise RuntimeError("Mega: непонятный ответ сервера")
+            raise RuntimeError(tr("mega.bad_answer"))
         if res in (-1, -3, -4, -19) and attempt + 1 < tries:
             time.sleep(delay)
             delay *= 2
@@ -148,7 +148,7 @@ def mega_api(payload, folder=None, tries=5):
 def mega_file_key(raw):
     """Split a 32-byte file key into the AES key, the CTR nonce and the expected MAC."""
     if len(raw) != 32:
-        raise ValueError("ключ файла в ссылке неполный: скопируй ссылку целиком")
+        raise ValueError(tr("mega.file_key_short"))
     return bytes(a ^ b for a, b in zip(raw[:16], raw[16:])), raw[16:24], raw[24:32]
 
 
@@ -160,7 +160,7 @@ def mega_attrs(key, b64):
         return {}
     raw = aes_cbc_decrypt(key, data, ZERO16)
     if not raw.startswith(b"MEGA"):
-        raise ValueError("не подошёл ключ из ссылки")
+        raise ValueError(tr("mega.key_mismatch"))
     txt = raw[4:].split(b"\0")[0].decode("utf-8", "replace").strip()
     try:
         return json.loads(txt)
@@ -202,7 +202,7 @@ def mega_folder_files(link, refresh=False):
         return hit[1]
     shared = b64u_decode(link["key"])
     if len(shared) != 16:
-        raise ValueError("ключ папки в ссылке неполный: скопируй ссылку целиком")
+        raise ValueError(tr("mega.folder_key_short"))
     res = mega_api({"a": "f", "c": 1, "r": 1}, folder=handle)
     nodes = res.get("f") or []
     names, parents, kinds, files = {}, {}, {}, []
@@ -219,7 +219,7 @@ def mega_folder_files(link, refresh=False):
             key, nonce, mac = mega_file_key(nk) if t == 0 else (nk[:16], b"", b"")
             attrs = mega_attrs(key, n.get("a") or "")
         except (ValueError, RuntimeError) as e:                    # noqa: PERF203
-            log(f"mega: узел {h} пропущен ({e})")
+            log(f"mega: node {h} skipped ({e})")
             continue
         names[h] = safe_name(attrs.get("n") or h)
         if t == 0:
@@ -239,7 +239,7 @@ def mega_folder_files(link, refresh=False):
     files.sort(key=lambda f: (f["dir"], f["name"]))
     dirs = sorted("/".join(x for x in (rel_dir(h), names[h]) if x)
                   for h, t in kinds.items() if t == 1 and h != handle and h in names)
-    out = {"name": names.get(handle) or "Папка Mega", "files": files, "dirs": dirs}
+    out = {"name": names.get(handle) or tr("mega.folder_title"), "files": files, "dirs": dirs}
     with MEGA_LOCK:
         MEGA_FOLDERS[handle] = (time.time(), out)
     return out
@@ -263,13 +263,13 @@ def mega_node_info(link, want_url=True):
         if link.get("node"):
             f = next((x for x in files if x["h"] == link["node"]), None)
             if not f:
-                raise RuntimeError("Mega: этого файла нет в папке по ссылке")
+                raise RuntimeError(tr("mega.file_not_in_folder"))
         elif len(files) == 1:
             f = files[0]
         elif not files:
-            raise RuntimeError("Mega: в папке по ссылке нет файлов")
+            raise RuntimeError(tr("mega.folder_empty"))
         else:
-            raise RuntimeError(f"по ссылке папка Mega с {len(files)} файлами: выбери нужные в списке")
+            raise RuntimeError(tr("mega.pick_files", n=len(files)))
         key, nonce, mac, size, name = f["key"], f["nonce"], f["mac"], f["size"], f["name"]
         if want_url:
             res = mega_api({"a": "g", "g": 1, "n": f["h"]}, folder=link["handle"])
@@ -279,7 +279,7 @@ def mega_node_info(link, want_url=True):
     if isinstance(url, list):
         url = url[0] if url else None
     if want_url and size and not isinstance(url, str):
-        raise RuntimeError("Mega не дала ссылку на файл: возможно, исчерпан лимит трафика")
+        raise RuntimeError(tr("mega.no_url"))
     return {"name": safe_name(name or (link.get("node") or link["handle"])), "size": size,
             "key": key, "nonce": nonce, "mac": mac, "url": url}
 
@@ -288,7 +288,7 @@ def mega_probe(url):
     """What is behind a link, for the picker: one file or a list of them."""
     link = mega_parse_link(url)
     if not link:
-        raise ValueError("это не ссылка на Mega")
+        raise ValueError(tr("mega.not_mega"))
     if link["kind"] == "file":
         i = mega_node_info(link, want_url=False)
         files = [{"h": link["handle"], "name": i["name"], "size": i["size"], "dir": ""}]
@@ -347,10 +347,10 @@ class MegaSource:
     def _discard(self, r, n):
         while n > 0:
             if self._cancelled():
-                raise RuntimeError("отменено")
+                raise RuntimeError(tr("status.cancelled"))
             b = r.read(min(n, CHUNK))
             if not b:
-                raise ConnectionError("Mega оборвала передачу")
+                raise ConnectionError(tr("mega.cut"))
             n -= len(b)
 
     def _connect(self):
@@ -385,19 +385,19 @@ class MegaSource:
         out = bytearray()
         while len(out) < n:
             if self._cancelled():
-                raise RuntimeError("отменено")
+                raise RuntimeError(tr("status.cancelled"))
             try:
                 if self.r is None:
                     self._connect()
                 b = self.r.read(min(n - len(out), CHUNK))
                 if not b:
-                    raise ConnectionError("Mega оборвала передачу раньше времени")
+                    raise ConnectionError(tr("mega.cut_early"))
             except NET_ERRORS as e:
                 self._drop()
                 self.fails += 1
                 if self.fails > self.tries:
                     raise RuntimeError(f"Mega: {net_reason(e)}") from e
-                log(f"mega: обрыв на {self.pos} байте ({e}), продолжаю")
+                log(f"mega: cut at byte {self.pos} ({e}), resuming")
                 time.sleep(min(2 * self.fails, 10))
                 continue
             out += b
@@ -426,8 +426,7 @@ def mega_fetch(job, info, part, base=0):
     if not STATE.get("mega_verify", True) or not info["mac"] or not info["size"]:
         return
     if not hmac.compare_digest(mega_meta_mac(info["key"], macs), info["mac"]):
-        raise RuntimeError("файл скачался с ошибкой: не сошлась контрольная сумма Mega. "
-                           "Попробуй ещё раз, а если повторяется - выключи проверку в настройках")
+        raise RuntimeError(tr("mega.bad_mac"))
 
 
 class MegaSlot:
@@ -439,7 +438,7 @@ class MegaSlot:
     def __enter__(self):
         while not MEGA_GATE.acquire(timeout=0.25):
             if self.job.cancel:
-                raise RuntimeError("отменено")
+                raise RuntimeError(tr("status.cancelled"))
         return self
 
     def __exit__(self, *exc):
@@ -451,7 +450,7 @@ def run_mega_download(job, link):
     try:
         with MegaSlot(job):
             if job.cancel:
-                raise RuntimeError("отменено")
+                raise RuntimeError(tr("status.cancelled"))
             job.status = "resolving"
             info = mega_node_info(link)
             dest, part = reserve_path(job.root / "_inbox", info["name"])
@@ -488,7 +487,7 @@ def mega_rel_path(root, rel):
     parts = [safe_name(x) for x in str(rel).replace("\\", "/").split("/") if x.strip(" .")]
     p = root.joinpath(*parts)
     if not inside(root, p):
-        raise ValueError("путь в папке Mega выходит за её пределы")
+        raise ValueError(tr("mega.path_escape"))
     return p
 
 
@@ -533,7 +532,7 @@ def run_mega_folder(job, link, picked):
     try:
         with MegaSlot(job):
             if job.cancel:
-                raise RuntimeError("отменено")
+                raise RuntimeError(tr("status.cancelled"))
             job.status = "resolving"
             data = mega_folder_files(link)
             title = safe_name(data["name"])
@@ -548,8 +547,8 @@ def run_mega_folder(job, link, picked):
             job.started = time.time()
             for i, f in enumerate(picked, 1):
                 if job.cancel:
-                    raise RuntimeError("отменено")
-                job.label = f"{title} · файл {i} из {len(picked)}"
+                    raise RuntimeError(tr("status.cancelled"))
+                job.label = tr("mega.file_i_of_n", title=title, i=i, n=len(picked))
                 dest = free_path(mega_rel_path(stage, f"{f['dir']}/{f['name']}"))
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 info = mega_node_info(dict(link, node=f["h"]), want_url=f["size"] > 0)

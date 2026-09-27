@@ -25,8 +25,7 @@ UPDATE = """
 import runpy, sys
 g = runpy.run_path(sys.argv[1], run_name="installed")
 update = g.get("self_update") or __import__("deckdrop.update", fromlist=["x"]).self_update
-note, port = update(sys.argv[2])
-print(note)
+print(update(sys.argv[2])[0])   # (note, port) up to 0.3.24, (note, port, updated) since
 """
 
 

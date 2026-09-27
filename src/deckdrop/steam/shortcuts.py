@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ..config import log
 from ..detect import game_exe_path
+from ..i18n import tr
 from ..state import STATE, STATE_LOCK, added_rec, save_state, update_added
 from ..steam.cdp import CDP
 from ..steam.compat import compat_label
@@ -40,14 +41,14 @@ def rename_shortcut(game_dir, exe, name):
     p = game_exe_path(game_dir, exe)
     name = name.strip()
     if not name:
-        raise ValueError("пустое имя")
+        raise ValueError(tr("rename.empty"))
     update_added(str(p), name=name)
     appid = resolve_appid(p)
     if CDP.available() and appid:
         CDP.set_name(appid, name)
-        return f"переименовано в «{name}»"
+        return tr("rename.done", name=name)
     queue_pending(op="rename", exe=str(p), name=name)
-    return "переименование в очереди до включения управления Steam"
+    return tr("rename.queued")
 
 
 def set_compat_for(game_dir, exe, tool):
@@ -58,7 +59,7 @@ def set_compat_for(game_dir, exe, tool):
         CDP.set_compat(appid, tool or "")
         return f"Proton: {compat_label(tool)}"
     queue_pending(op="compat", exe=str(p), tool=tool or "")
-    return "смена Proton в очереди до включения управления Steam"
+    return tr("compat.queued")
 
 
 def drain_pending():

@@ -46,3 +46,10 @@ jobs:
         run: python tests/smoke.py tools/dev.py
       - name: Smoke, built file
         run: python tests/smoke.py dist/deckdrop.py
+      - name: Page in a browser, every language
+        # no JavaScript errors and no untranslated keys on any tab, language switch works
+        if: matrix.python == '3.11'
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+          python tests/ui_check.py dist/deckdrop.py

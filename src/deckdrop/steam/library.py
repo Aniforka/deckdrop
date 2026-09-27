@@ -6,6 +6,7 @@ import zlib
 from pathlib import Path
 
 from ..config import STEAM_ROOT, log
+from ..i18n import tr
 
 
 def userdata_dirs():
@@ -129,7 +130,7 @@ def pick_userdata():
         return Path(next(iter(idx.values()))["userdata"])
     dirs = userdata_dirs()
     if not dirs:
-        raise RuntimeError("не нашёл папку userdata Steam")
+        raise RuntimeError(tr("steam.no_userdata"))
     return dirs[0]
 
 

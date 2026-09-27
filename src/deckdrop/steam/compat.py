@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from ..config import STEAM_ROOT, log
+from ..i18n import tr
 from ..steam.library import library_folders, text_vdf, vget
 
 
@@ -99,4 +100,4 @@ def compat_label(name):
     for t in compat_tools():
         if t["name"] == name:
             return t["label"]
-    return name or "без Proton"
+    return name or tr("compat.none")

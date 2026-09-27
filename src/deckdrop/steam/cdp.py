@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 
 from ..config import CEF_ENABLED, CEF_PORT, STEAM_ROOT, log
+from ..i18n import tr
 from ..state import STATE
 
 
@@ -41,7 +42,7 @@ class WS:
         while b"\r\n\r\n" not in buf:
             chunk = self.sock.recv(4096)
             if not chunk:
-                raise ConnectionError("websocket: соединение закрыто при рукопожатии")
+                raise ConnectionError("websocket: closed during the handshake")
             buf += chunk
         head, self.buf = buf.split(b"\r\n\r\n", 1)
         status = head.split(b"\r\n", 1)[0]
@@ -49,13 +50,13 @@ class WS:
             raise ConnectionError("websocket: " + status.decode(errors="replace"))
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
         if accept not in head:
-            raise ConnectionError("websocket: неверный Sec-WebSocket-Accept")
+            raise ConnectionError("websocket: bad Sec-WebSocket-Accept")
 
     def _read(self, n):
         while len(self.buf) < n:
             chunk = self.sock.recv(65536)
             if not chunk:
-                raise ConnectionError("websocket: соединение закрыто")
+                raise ConnectionError("websocket: connection closed")
             self.buf += chunk
         out, self.buf = self.buf[:n], self.buf[n:]
         return out
@@ -91,7 +92,7 @@ class WS:
             if mask:
                 data = _ws_mask(data, mask)
             if opcode == 0x8:
-                raise ConnectionError("websocket: закрыто сервером")
+                raise ConnectionError("websocket: closed by the server")
             if opcode == 0x9:
                 self._send(0xA, data)
                 continue
@@ -176,7 +177,7 @@ class SteamCDP:
     def eval(self, expr, timeout=30):
         url = self.target()
         if not url:
-            raise RuntimeError("управление Steam недоступно")
+            raise RuntimeError(tr("cdp.unavailable"))
         ws = WS(url, timeout)
         try:
             ws.send_text(json.dumps({"id": 1, "method": "Runtime.evaluate",
@@ -191,10 +192,10 @@ class SteamCDP:
                 res = msg.get("result", {})
                 exc = res.get("exceptionDetails")
                 if exc:
-                    desc = (exc.get("exception") or {}).get("description") or exc.get("text") or "ошибка JS"
+                    desc = (exc.get("exception") or {}).get("description") or exc.get("text") or "JS error"
                     raise RuntimeError("Steam JS: " + desc.splitlines()[0][:200])
                 return (res.get("result") or {}).get("value")
-            raise TimeoutError("Steam не ответил")
+            raise TimeoutError(tr("cdp.no_answer"))
         finally:
             ws.close()
 
@@ -205,7 +206,7 @@ class SteamCDP:
     def add_shortcut(self, name, exe, start_dir):
         appid = self.call("SteamClient.Apps.AddShortcut", name, exe, start_dir, "")
         if not isinstance(appid, (int, float)) or not appid:
-            raise RuntimeError(f"Steam не вернул appid ({appid!r})")
+            raise RuntimeError(tr("cdp.no_appid", value=repr(appid)))
         return int(appid) & 0xFFFFFFFF
 
     def set_name(self, appid, name):
