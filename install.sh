@@ -2,10 +2,10 @@
 # DeckDrop installer for Steam Deck (SteamOS).
 # Downloads deckdrop.py into ~/deckdrop and registers the systemd user service.
 #
-#   sh install.sh                                   latest version from GitHub
+#   sh install.sh                                   latest release from GitHub
 #   sh install.sh http://192.168.1.10:8000/deckdrop.py   a copy served from your PC
 set -e
-SRC="${1:-${DECKDROP_SRC:-https://raw.githubusercontent.com/aniforka/deckdrop/main/deckdrop.py}}"
+SRC="${1:-${DECKDROP_SRC:-https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py}}"
 DEST="$HOME/deckdrop/deckdrop.py"
 
 echo "==> Скачиваю deckdrop.py: $SRC"

@@ -1,0 +1,122 @@
+"""Persistent state (state.json), admin PIN, media gallery password and tokens."""
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import threading
+import time
+
+from .config import CEF_ENABLED, STATE_FILE, UPDATE_URL_DEFAULT, UPDATE_URL_LEGACY
+
+
+STATE_LOCK = threading.RLock()
+STATE = {
+    "admin_pin": os.environ.get("DECKDROP_PIN", ""),   # empty: a random one is made on first start
+    "hidden": [],                 # game dirs hidden from the list
+    "imported": [],               # single game folders located outside the DeckDrop roots
+    "added": {},                  # exe path -> {at, appid, name, art, ...}
+    "pending": [],                # steam ops waiting for CEF control: {op, exe, ...}
+    "update_url": UPDATE_URL_DEFAULT,
+    "media_pw": None,             # {salt, hash}
+    "default_compat": "proton_experimental",
+    "prefer_linux": True,
+    "vndb_auto": True,
+    "vndb_nsfw": True,             # False = skip 18+ images from VNDB
+    "archive_passwords": [],
+    "default_disk": "internal",
+    "proxy": "",                  # DeckDrop-only proxy: socks5://host:port or http://host:port
+    "proxy_downloads": False,     # also route game downloads through it
+    "mega_verify": True,          # check Mega's own checksum after a download
+    "cef_enabled": CEF_ENABLED,
+}
+SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "archive_passwords",
+                "default_disk", "cef_enabled", "update_url", "proxy", "proxy_downloads",
+                "mega_verify")
+PROTECTED_KEYS = ("proxy",)   # may carry credentials: PIN required to read or change
+
+
+def load_state():
+    try:
+        data = json.loads(STATE_FILE.read_text("utf-8"))
+        if isinstance(data, dict):
+            STATE.update(data)
+    except (OSError, ValueError):
+        pass
+    if str(STATE.get("update_url") or "").strip().lower() in UPDATE_URL_LEGACY:
+        STATE["update_url"] = UPDATE_URL_DEFAULT
+
+
+def save_state():
+    with STATE_LOCK:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(STATE, ensure_ascii=False, indent=1), "utf-8")
+        os.replace(tmp, STATE_FILE)
+
+
+def set_state(**kv):
+    with STATE_LOCK:
+        STATE.update(kv)
+        save_state()
+
+
+def added_rec(exe, create=False):
+    with STATE_LOCK:
+        recs = STATE.setdefault("added", {})
+        if create and exe not in recs:
+            recs[exe] = {"at": int(time.time())}
+        return dict(recs.get(exe, {}))
+
+
+def update_added(exe, **kv):
+    with STATE_LOCK:
+        rec = STATE.setdefault("added", {}).setdefault(exe, {"at": int(time.time())})
+        rec.update(kv)
+        save_state()
+
+
+def check_pin(pin):
+    stored = str(STATE.get("admin_pin") or "")
+    ok = bool(stored) and hmac.compare_digest(str(pin or ""), stored)
+    if not ok:
+        time.sleep(1)  # slow down guessing
+        raise PermissionError("неверный PIN")
+
+
+def ensure_pin():
+    """Give a fresh install a random admin PIN. Returns True when one was just made."""
+    if STATE.get("admin_pin"):
+        return False
+    set_state(admin_pin=f"{secrets.randbelow(10 ** 4):04d}")
+    return True
+
+
+def pw_hash(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
+    return {"salt": salt, "hash": digest}
+
+
+MEDIA_TOKENS = {}  # token -> expiry
+
+
+def media_login(password):
+    rec = STATE.get("media_pw")
+    if not rec:
+        raise PermissionError("пароль медиа ещё не задан")
+    if not hmac.compare_digest(pw_hash(password, rec["salt"])["hash"], rec["hash"]):
+        time.sleep(1)
+        raise PermissionError("неверный пароль")
+    token = secrets.token_urlsafe(24)
+    now = time.time()
+    for t, exp in list(MEDIA_TOKENS.items()):
+        if exp < now:
+            del MEDIA_TOKENS[t]
+    MEDIA_TOKENS[token] = now + 12 * 3600
+    return token
+
+
+def media_token_ok(token):
+    return bool(token) and MEDIA_TOKENS.get(token, 0) > time.time()
