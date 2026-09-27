@@ -32,6 +32,9 @@ jobs:
           python -m pip install pyflakes
           python -m pyflakes src tools tests
           sh -n install.sh
+      - name: Changelog describes this version
+        # a version bump must say what changed: that section becomes the release notes
+        run: python tools/changelog.py --check
       - name: Build
         run: python tools/build.py
       - name: Unit and update tests

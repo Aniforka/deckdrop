@@ -30,6 +30,9 @@ def main():
     game = home / "Games" / "Cool Game"
     game.mkdir(parents=True)
     (game / "Game.exe").write_bytes(b"MZ")
+    (home / ".steam").mkdir()                          # the Deck's Steam is in Russian
+    (home / ".steam" / "registry.vdf").write_text('"Registry" { "HKCU" { "Software" { "Valve" { "Steam" '
+                                                  '{ "language" "russian" } } } } }', "utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
     env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(home / "no-steam"))
     app = Running(PROGRAM, env)
@@ -37,8 +40,11 @@ def main():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM") or None)
-            for locale, lang in (("ru-RU", "ru"), ("en-US", "en")):
+            # no choice on the device: Steam's language, even from an English browser; then a device set to English
+            for locale, choice, lang in (("en-US", None, "ru"), ("ru-RU", "en", "en")):
                 ctx = browser.new_context(locale=locale, viewport={"width": 390, "height": 844})
+                if choice:
+                    ctx.add_cookies([{"name": "deckdrop_lang", "value": choice, "url": f"http://127.0.0.1:{app.port}/"}])
                 ctx.route("**/favicon.ico", lambda route: route.fulfill(status=204))
                 page = ctx.new_page()
                 errors = []
@@ -70,7 +76,8 @@ def main():
                               if not k.endswith(".local"))   # the Deck's own address, e.g. steamdeck.local
                 actual = page.evaluate("document.documentElement.lang")
                 print(f"{locale}: page {lang}, after switch {switched}/{actual}, errors {errors}, raw keys {keys}")
-                if errors or keys or switched != other:
+                first = seen[0]
+                if errors or keys or switched != other or ("Настройки" in first) != (lang == "ru"):
                     failed.append(locale)
                 ctx.close()
             browser.close()

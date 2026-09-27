@@ -116,8 +116,12 @@ def shortcuts_vdf(entries):
     return out + b"\x08\x08"
 
 
-def demo_home(home):
+def demo_home(home, lang):
     """A lived-in Deck: games on two disks, three in Steam with artwork, screenshots, saves."""
+    (home / ".steam").mkdir(parents=True, exist_ok=True)      # the Steam language picks the page's
+    (home / ".steam" / "registry.vdf").write_text(
+        '"Registry" { "HKCU" { "Software" { "Valve" { "Steam" { "language" "%s" } } } } }'
+        % {"ru": "russian", "en": "english"}[lang])
     steam = home / ".local" / "share" / "Steam"
     ud = steam / "userdata" / USER
     (ud / "config" / "grid").mkdir(parents=True)
@@ -231,7 +235,7 @@ def shoot(lang, out, chromium):
         own_home = True
     except OSError:
         home, own_home = work / "home", False
-    steam, sd = demo_home(home)
+    steam, sd = demo_home(home, lang)
     (work / "www").mkdir()
     game_archive(work / "www" / ARCHIVE)
     srv, base = serve(work / "www")

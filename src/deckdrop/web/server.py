@@ -194,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 self._send(200, render(i18n.current()).encode(), "text/html; charset=utf-8",
-                           {"Vary": "Cookie, Accept-Language", "Cache-Control": "no-cache"})
+                           {"Vary": "Cookie", "Cache-Control": "no-cache"})
             elif path == "/api/state":
                 with LOCK:
                     jobs = [j.to_dict() for j in JOBS.values()]

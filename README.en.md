@@ -13,7 +13,7 @@ unpacks it and adds the game to Steam with artwork.
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-3776ab)
 ![SteamOS](https://img.shields.io/badge/SteamOS-3.x-1a9fff)
 
-**English** · [Русский](README.ru.md)
+**English** · [Русский](README.ru.md) · [What's new](CHANGELOG.md)
 
 <img src="docs/media/en/demo.gif" width="320" alt="A link pasted on a phone; the Deck downloads and unpacks the game">
 
@@ -34,7 +34,7 @@ same Wi-Fi, and from the couch you can:
 - **back up saves** to a zip and restore them;
 - **browse Steam screenshots and recordings** in a password-protected gallery and save them
   to your phone;
-- do all of this **in English or Russian**: the language follows your browser.
+- do all of this **in English or Russian**: the language follows Steam on the Deck.
 
 One Python file, standard library only. Nothing to install on stock SteamOS, no root, no
 developer mode, and SteamOS updates do not break it.
@@ -254,14 +254,15 @@ like `Environment=DECKDROP_PORT=8090`. Then run `systemctl --user daemon-reload`
 
 ## Interface language
 
-DeckDrop speaks **English and Russian** and picks the language for each device, in this order:
+DeckDrop speaks **English and Russian**. The source of truth is **the Steam client on the
+Deck**: whatever language is picked in the Deck's settings, DeckDrop answers in it, whichever
+device opens the page. SteamOS always keeps its system locale in English, so DeckDrop reads
+Steam's own language.
 
-1. **Settings → Language** on that phone or PC. The choice is kept on that device only: you
-   can have English while a friend opening the page on their phone gets Russian.
-2. **The browser language** of the device the page is open on.
-3. **The Steam language on the Deck**, i.e. the one picked in the Deck's settings. SteamOS
-   always keeps its system locale in English, so DeckDrop reads Steam's own language.
-4. English.
+1. **Settings → Language** on that phone or PC, if a choice was made there. It is kept on that
+   device only: you can have English while a friend on their phone gets Russian.
+2. **The Steam language on the Deck** ("Auto", the default).
+3. English, when Steam is set to a language DeckDrop has no translation for yet.
 
 Error messages and task texts come in the same language. The installer's messages follow the
 Steam language on the Deck. Logs in `journalctl` are always in English.
@@ -556,6 +557,7 @@ src/deckdrop/
 tools/
   build.py           builds the single file
   dev.py             runs straight from src/, no build
+  changelog.py       a version's CHANGELOG.md section: release notes and the check
   screenshots.py     README screenshots and GIFs from demo data
 tests/
 ```
@@ -579,9 +581,17 @@ The key test is [`tests/test_user_data.py`](tests/test_user_data.py): it install
 releases, sets them up through the page, updates them with the button and checks that no
 setting, password, game or file of the user was lost. CI runs it as its own required step.
 
-**Releasing.** Bump `__version__` in [`src/deckdrop/__init__.py`](src/deckdrop/__init__.py) and
-merge into `main`. GitHub Actions builds the file, runs every check, tags `vX.Y.Z` and publishes
-a release with `deckdrop.py` and `install.sh`. Commits that keep the version do not release.
+**Releasing.**
+1. Bump `__version__` in [`src/deckdrop/__init__.py`](src/deckdrop/__init__.py).
+2. Say what changed in [`CHANGELOG.md`](CHANGELOG.md): a new `## X.Y.Z — date` section at the
+   very top, with `### English` and `### Русский` parts. Without it CI is red and no release
+   goes out (`python tools/changelog.py --check` checks it locally).
+3. Merge into `main`. GitHub Actions builds the file, runs every check, tags `vX.Y.Z` and
+   publishes a release with `deckdrop.py` and `install.sh`. The release description is the
+   version's section of `CHANGELOG.md`, followed by GitHub's list of pull requests and a link to
+   the diff against the previous release.
+
+Commits that keep the version do not release.
 
 **A new language.** Copy [`src/deckdrop/i18n/en.json`](src/deckdrop/i18n/en.json) to
 `<code>.json` (e.g. `de.json`) and translate the values, leaving the keys and `{placeholders}`

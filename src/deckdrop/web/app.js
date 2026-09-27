@@ -349,7 +349,7 @@ $('#vdel').onclick=async()=>{if(!viewing)return;const i=viewing;const r=await as
  const j=await api('/api/media/delete',{id:i.id,pin:r[0],token:mediaToken});if(j.ok){toast(t('toast.deleted',{what:j.removed}),'ok');closeViewer();loadMedia(true);}};
 $('#mediaReset').onclick=async()=>{const r=await ask({title:t('media.reset_title'),text:t('media.reset_text'),fields:[{label:'PIN',type:'password',numeric:true}],ok:t('media.reset_ok'),danger:true});if(!r)return;
  const j=await api('/api/media/reset',{pin:r[0]});if(j.ok){mediaToken=null;toast(t('media.reset_done'),'ok');if(tab==='media')mediaEnter();}};
-// ---- interface language: kept per device in a cookie the server reads (none = follow the browser)
+// ---- interface language: kept per device in a cookie the server reads (none = the Steam language)
 function langChoice(){const m=document.cookie.match(/(?:^|;\s*)deckdrop_lang=(\w+)/);return m&&LANGS[m[1]]?m[1]:'';}
 function fillLang(){const sel=$('#sLang');if(sel.options.length)return;const cur=langChoice();
  sel.innerHTML=[['',t('set.lang.auto')],...Object.entries(LANGS)].map(([v,n])=>`<option value="${v}" ${v===cur?'selected':''}>${esc(n)}</option>`).join('');}

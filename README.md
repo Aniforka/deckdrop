@@ -20,12 +20,12 @@
 Paste a link or drop a file on your phone or PC, and the Deck downloads it (Mega included,
 decrypted on the Deck), unpacks it and adds the game to Steam with Proton and all five kinds
 of artwork. Plus patches, save backups and a gallery of your Steam screenshots.
-One Python file, nothing to install on stock SteamOS. The interface is in English and Russian.
+One Python file, nothing to install on stock SteamOS. English and Russian, following the Deck's Steam language.
 
 Вставляешь ссылку или кидаешь файл с телефона или ПК — дек скачивает его (Mega тоже,
 с расшифровкой прямо на деке), распаковывает и добавляет игру в Steam с Proton и всеми пятью
 видами обложек. А ещё патчи, бэкапы сейвов и галерея скриншотов Steam. Один файл на Python,
-на стоковом SteamOS ничего доустанавливать не нужно. Интерфейс на русском и английском.
+на стоковом SteamOS ничего доустанавливать не нужно. Русский и английский, по языку Steam на деке.
 
 ```bash
 wget https://github.com/Aniforka/deckdrop/releases/latest/download/install.sh
@@ -41,4 +41,4 @@ sh install.sh
 </tr>
 </table>
 
-MIT License · [Releases](https://github.com/Aniforka/deckdrop/releases) · [Issues](https://github.com/Aniforka/deckdrop/issues)
+MIT License · [What's new · Что нового](CHANGELOG.md) · [Releases](https://github.com/Aniforka/deckdrop/releases) · [Issues](https://github.com/Aniforka/deckdrop/issues)

@@ -173,15 +173,19 @@ class DetectTest(unittest.TestCase):
         i18n._steam.update(at=0.0, lang=None)
 
     def test_order(self):
+        """The choice on the device, else the Steam language (the source of truth), else English."""
         self.steam("russian")
-        both = {"Cookie": "x=1; deckdrop_lang=en", "Accept-Language": "ru-RU,ru;q=0.9"}
-        self.assertEqual(i18n.for_request(both), ("en", "choice"))
-        self.assertEqual(i18n.for_request({"Accept-Language": "en-US,en;q=0.9"}), ("en", "browser"))
-        self.assertEqual(i18n.for_request({"Accept-Language": "ja-JP"}), ("ru", "steam"))
+        self.assertEqual(i18n.for_request({"Cookie": "x=1; deckdrop_lang=en"}), ("en", "choice"))
         self.assertEqual(i18n.for_request({}), ("ru", "steam"))
+        # the browser has no say: a phone set to English still gets the Deck's Russian
+        self.assertEqual(i18n.for_request({"Accept-Language": "en-US,en;q=0.9"}), ("ru", "steam"))
 
-    def test_nothing_known_is_english(self):
-        self.assertEqual(i18n.for_request({"Accept-Language": "ja"}), ("en", "default"))   # ja: no catalog
+    def test_no_steam_is_english(self):
+        self.assertEqual(i18n.for_request({"Accept-Language": "ru"}), ("en", "default"))
+
+    def test_steam_language_without_catalog_is_english(self):
+        self.steam("japanese")
+        self.assertEqual(i18n.for_request({}), ("en", "default"))
 
     def test_steam_language_names(self):
         self.steam("english")
@@ -189,14 +193,9 @@ class DetectTest(unittest.TestCase):
         self.steam("schinese")                        # no catalog for it (yet): not picked
         self.assertIsNone(i18n.steam_language())
 
-    def test_accept_language_weights(self):
-        self.assertEqual(i18n.from_accept_language("ja-JP,ja;q=0.9,ru;q=0.8,en;q=0.7"), "ru")
-        self.assertEqual(i18n.from_accept_language("en;q=0.5, ru;q=0.6"), "ru")
-        self.assertEqual(i18n.from_accept_language("ru;q=0, en"), "en")
-        self.assertIsNone(i18n.from_accept_language("*"))
-
     def test_bad_cookie_is_ignored(self):
-        self.assertEqual(i18n.for_request({"Cookie": "deckdrop_lang=xx", "Accept-Language": "ru"}), ("ru", "browser"))
+        self.steam("russian")
+        self.assertEqual(i18n.for_request({"Cookie": "deckdrop_lang=xx"}), ("ru", "steam"))
 
 
 class PageTest(unittest.TestCase):
@@ -222,6 +221,9 @@ class ServerLanguageTest(unittest.TestCase):
     def setUpClass(cls):
         from test_user_data import Running
         cls.home = Path(tempfile.mkdtemp())
+        (cls.home / ".steam").mkdir()
+        (cls.home / ".steam" / "registry.vdf").write_text('"Registry" { "HKCU" { "Software" { "Valve" { "Steam" '
+                                                         '{ "language" "russian" } } } } }', "utf-8")
         env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
         env.update(HOME=str(cls.home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(cls.home / "x"))
         cls.app = Running(ROOT / "tools" / "dev.py", env)
@@ -242,15 +244,15 @@ class ServerLanguageTest(unittest.TestCase):
             return e.code, e.read().decode()
 
     def test_page_language(self):
-        _, ru = self.request("/", {"Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"})
-        _, en = self.request("/", {"Accept-Language": "ru-RU", "Cookie": "deckdrop_lang=en"})
+        _, ru = self.request("/", {"Accept-Language": "en-US"})             # the Deck's Steam is in Russian
+        _, en = self.request("/", {"Cookie": "deckdrop_lang=en"})
         self.assertIn('<html lang="ru">', ru)
         self.assertIn('<html lang="en">', en)
 
     def test_error_language(self):
         body = {"old": "0000", "new": "5555"}
-        _, ru = self.request("/api/settings/pin", {"Accept-Language": "ru"}, body)
-        _, en = self.request("/api/settings/pin", {"Accept-Language": "en"}, body)
+        _, ru = self.request("/api/settings/pin", {}, body)
+        _, en = self.request("/api/settings/pin", {"Cookie": "deckdrop_lang=en"}, body)
         self.assertEqual(json.loads(ru)["error"], "неверный PIN")
         self.assertEqual(json.loads(en)["error"], "wrong PIN")
 

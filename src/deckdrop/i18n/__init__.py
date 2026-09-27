@@ -8,10 +8,10 @@ picked by the placeholder n.
 
 The language of a request, first match wins:
   1. the choice made in Settings on that device (cookie deckdrop_lang);
-  2. the browser's languages (Accept-Language), i.e. the phone or PC the page is open on;
-  3. the language of the Steam client on the Deck (SteamOS keeps its system locale in
-     English, the language picked on the Deck is Steam's own, in ~/.steam/registry.vdf);
-  4. English.
+  2. the language of the Steam client on the Deck, the source of truth: it is what the
+     user picked on the Deck (SteamOS keeps its system locale in English, the language
+     lives in Steam's own ~/.steam/registry.vdf);
+  3. English, also when Steam's language has no catalog yet.
 Log lines stay in English.
 """
 import json
@@ -107,29 +107,6 @@ def default():
     return steam_language() or FALLBACK
 
 
-def from_accept_language(header):
-    """Best available language from an Accept-Language header, or None."""
-    best, best_q = None, 0.0
-    for i, part in enumerate((header or "").split(",")):
-        bits = part.strip().split(";")
-        tag = bits[0].strip().lower()
-        if not tag or tag == "*":
-            continue
-        q = 1.0
-        for b in bits[1:]:
-            b = b.strip()
-            if b.startswith("q="):
-                try:
-                    q = float(b[2:])
-                except ValueError:
-                    q = 0.0
-        q -= i * 1e-6                      # equal weights: earlier wins
-        code = tag.split("-")[0]
-        if code in available() and q > best_q:
-            best, best_q = code, q
-    return best
-
-
 def cookie_choice(cookie_header):
     for part in (cookie_header or "").split(";"):
         k, _, v = part.strip().partition("=")
@@ -139,13 +116,10 @@ def cookie_choice(cookie_header):
 
 
 def for_request(headers):
-    """(language, source) for a request; source is "choice", "browser", "steam" or "default"."""
+    """(language, source) for a request; source is "choice", "steam" or "default"."""
     lang = cookie_choice(headers.get("Cookie"))
     if lang:
         return lang, "choice"
-    lang = from_accept_language(headers.get("Accept-Language"))
-    if lang:
-        return lang, "browser"
     lang = steam_language()
     if lang:
         return lang, "steam"
