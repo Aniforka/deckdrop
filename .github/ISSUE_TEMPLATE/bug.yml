@@ -1,0 +1,52 @@
+name: Bug report / Ошибка
+description: Something does not work as it should / Что-то работает не так
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! You can write in English or Russian.
+        Спасибо! Писать можно по-английски или по-русски.
+  - type: input
+    id: version
+    attributes:
+      label: DeckDrop version / Версия DeckDrop
+      description: Shown at the bottom of the page, e.g. v0.4.0 / Видна внизу страницы, например v0.4.0
+      placeholder: v0.4.0
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and SteamOS version / Устройство и версия SteamOS
+      description: Steam Deck LCD/OLED, SteamOS 3.x (Settings → System) / Настройки → Система
+      placeholder: Steam Deck OLED, SteamOS 3.7
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you do? / Что делал?
+      description: Steps to reproduce. For a download, say where the link was from (Mega, Google Drive, a direct link…); no need to paste the link itself. / Шаги. Для скачивания — откуда ссылка (Mega, Google Диск, прямая…), саму ссылку вставлять не нужно.
+      placeholder: |
+        1. Pasted a Mega folder link
+        2. Pressed Download
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead? / Что ожидал и что получилось?
+      description: Screenshots of the page are welcome. / Скриншоты страницы приветствуются.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log / Лог
+      description: |
+        On the Deck, in Konsole (Desktop Mode): / На деке в Konsole (Desktop Mode):
+        `journalctl --user -u deckdrop -n 100`
+        Check it for anything private (paths, links) before posting. / Перед отправкой проверь, нет ли там личного (пути, ссылки).
+      render: text
