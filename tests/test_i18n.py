@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deckdrop import i18n  # noqa: E402
 from deckdrop.web.page import render  # noqa: E402
 
-PLURAL_FORMS = {"ru": {"one", "few", "many"}, "en": {"one", "other"}}
+PLURAL_FORMS = {"ru": {"one", "few", "many"}, "uk": {"one", "few", "many"}}   # others: one, other
 CYRILLIC = re.compile("[Ѐ-ӿ]")
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -79,7 +79,7 @@ class CatalogTest(unittest.TestCase):
         for lang, cat in catalogs().items():
             for key, value in cat.items():
                 if isinstance(value, dict):
-                    self.assertEqual(set(value), PLURAL_FORMS[lang], f"{lang}: {key}")
+                    self.assertEqual(set(value), PLURAL_FORMS.get(lang, {"one", "other"}), f"{lang}: {key}")
                     self.assertIn("n", placeholders(value), f"{lang}: {key} needs {{n}}")
 
     def test_no_empty_texts(self):
@@ -177,11 +177,11 @@ class DetectTest(unittest.TestCase):
         both = {"Cookie": "x=1; deckdrop_lang=en", "Accept-Language": "ru-RU,ru;q=0.9"}
         self.assertEqual(i18n.for_request(both), ("en", "choice"))
         self.assertEqual(i18n.for_request({"Accept-Language": "en-US,en;q=0.9"}), ("en", "browser"))
-        self.assertEqual(i18n.for_request({"Accept-Language": "de-DE"}), ("ru", "steam"))
+        self.assertEqual(i18n.for_request({"Accept-Language": "ja-JP"}), ("ru", "steam"))
         self.assertEqual(i18n.for_request({}), ("ru", "steam"))
 
     def test_nothing_known_is_english(self):
-        self.assertEqual(i18n.for_request({"Accept-Language": "ja"}), ("en", "default"))
+        self.assertEqual(i18n.for_request({"Accept-Language": "ja"}), ("en", "default"))   # ja: no catalog
 
     def test_steam_language_names(self):
         self.steam("english")
@@ -190,7 +190,7 @@ class DetectTest(unittest.TestCase):
         self.assertIsNone(i18n.steam_language())
 
     def test_accept_language_weights(self):
-        self.assertEqual(i18n.from_accept_language("de-DE,de;q=0.9,ru;q=0.8,en;q=0.7"), "ru")
+        self.assertEqual(i18n.from_accept_language("ja-JP,ja;q=0.9,ru;q=0.8,en;q=0.7"), "ru")
         self.assertEqual(i18n.from_accept_language("en;q=0.5, ru;q=0.6"), "ru")
         self.assertEqual(i18n.from_accept_language("ru;q=0, en"), "en")
         self.assertIsNone(i18n.from_accept_language("*"))
