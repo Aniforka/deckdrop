@@ -39,6 +39,12 @@ jobs:
         run: if [ -f deckdrop.py ]; then python tools/build.py --check deckdrop.py; fi
       - name: Unit and update tests
         run: python -m unittest discover -s tests -v
+        env:
+          DECKDROP_SKIP_USER_DATA: "1"   # runs as its own step below
+      - name: User data survives an update (required)
+        # updates from each earlier release through its own "update" button and checks
+        # that no setting, password, game or file of the user is lost or rewritten
+        run: python -m unittest -v tests/test_user_data.py
       - name: Smoke, from source
         run: python tests/smoke.py tools/dev.py
       - name: Smoke, built file

@@ -45,8 +45,12 @@ jobs:
           python -m pip install pyflakes
           python -m pyflakes src tools tests
           python tools/build.py
-          python -m unittest discover -s tests
+          DECKDROP_SKIP_USER_DATA=1 python -m unittest discover -s tests
           python tests/smoke.py dist/deckdrop.py
+
+      - name: User data survives an update (required)
+        if: steps.ver.outputs.new == 'true'
+        run: python -m unittest -v tests/test_user_data.py
 
       - name: Publish release
         if: steps.ver.outputs.new == 'true'
