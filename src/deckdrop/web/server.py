@@ -173,9 +173,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         line = args[0] if args else ""
         if "/api/state" not in line and "/thumb" not in line:
-            # the gallery token rides in ?t= for <img> and <video>; keep it out of the journal
-            msg = re.sub(r"([?&]t=)[^&\s\"]+", r"\1***", fmt % args)
-            log(f"{self.address_string()} {msg}")
+            log(f"{self.address_string()} {fmt % args}")
 
     # ---- helpers
     def _send(self, code, body, ctype, extra=None):

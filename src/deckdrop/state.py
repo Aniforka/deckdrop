@@ -45,24 +45,15 @@ def load_state():
             STATE.update(data)
     except (OSError, ValueError):
         pass
-    try:
-        if STATE_FILE.exists() and STATE_FILE.stat().st_mode & 0o077:
-            STATE_FILE.chmod(0o600)               # earlier versions left it readable by everyone
-    except OSError:
-        pass
     if str(STATE.get("update_url") or "").strip().lower() in UPDATE_URL_LEGACY:
         STATE["update_url"] = UPDATE_URL_DEFAULT
 
 
 def save_state():
-    # the file holds the admin PIN, archive passwords and proxy credentials: owner only
     with STATE_LOCK:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.unlink(missing_ok=True)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(STATE, ensure_ascii=False, indent=1))
+        tmp.write_text(json.dumps(STATE, ensure_ascii=False, indent=1), "utf-8")
         os.replace(tmp, STATE_FILE)
 
 

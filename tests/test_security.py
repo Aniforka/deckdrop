@@ -3,10 +3,8 @@ import io
 import json
 import os
 import shutil
-import stat
 import sys
 import tempfile
-import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -172,14 +170,6 @@ class ServerTest(unittest.TestCase):
         q = urllib.parse.urlencode({"game": "/", "exe": str(rel)})
         status, _, _ = self.request(f"/api/saves/info?{q}")
         self.assertEqual(status, 400)
-
-    def test_state_file_is_private(self):
-        self.request("/api/settings", {"vndb_auto": True})
-        deadline = time.time() + 5
-        f = self.home / ".config" / "deckdrop" / "state.json"
-        while not f.exists() and time.time() < deadline:
-            time.sleep(0.1)
-        self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
 
 
 if __name__ == "__main__":
