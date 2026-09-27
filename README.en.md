@@ -15,11 +15,11 @@ unpacks it and adds the game to Steam with artwork.
 
 **English** · [Русский](README.ru.md) · [What's new](CHANGELOG.md)
 
-<img src="docs/media/en/demo.gif" width="320" alt="A link pasted on a phone; the Deck downloads and unpacks the game">
-
 </div>
 
 ## What it is
+
+<p align="center"><img src="docs/media/en/demo.gif" width="300" alt="A link pasted on a phone; the Deck downloads and unpacks the game"></p>
 
 DeckDrop is a small web page that lives on the Deck itself. Open it from any device on the
 same Wi-Fi, and from the couch you can:

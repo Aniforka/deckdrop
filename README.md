@@ -13,9 +13,9 @@
 
 ### [📘 English guide](README.en.md) &nbsp;·&nbsp; [📗 Руководство на русском](README.ru.md)
 
-<img src="docs/media/en/demo.gif" width="300" alt="DeckDrop: a link pasted on a phone, the Deck downloads and unpacks the game">
-
 </div>
+
+<p align="center"><img src="docs/media/en/demo.gif" width="300" alt="DeckDrop: a link pasted on a phone, the Deck downloads and unpacks the game"></p>
 
 Paste a link or drop a file on your phone or PC, and the Deck downloads it (Mega included,
 decrypted on the Deck), unpacks it and adds the game to Steam with Proton and all five kinds
@@ -27,11 +27,6 @@ One Python file, nothing to install on stock SteamOS. English and Russian, follo
 видами обложек. А ещё патчи, бэкапы сейвов и галерея скриншотов Steam. Один файл на Python,
 на стоковом SteamOS ничего доустанавливать не нужно. Русский и английский, по языку Steam на деке.
 
-```bash
-wget https://github.com/Aniforka/deckdrop/releases/latest/download/install.sh
-sh install.sh
-```
-
 <table>
 <tr>
 <td align="center" valign="top"><img src="docs/media/en/games.png" width="200" alt="Games"></td>
@@ -40,5 +35,12 @@ sh install.sh
 <td align="center" valign="top"><img src="docs/media/en/settings.png" width="200" alt="Settings"></td>
 </tr>
 </table>
+
+**Install / Установка** — on the Deck in Desktop Mode, in Konsole · на деке в Desktop Mode, в Konsole:
+
+```bash
+wget https://github.com/Aniforka/deckdrop/releases/latest/download/install.sh
+sh install.sh
+```
 
 MIT License · [What's new · Что нового](CHANGELOG.md) · [Releases](https://github.com/Aniforka/deckdrop/releases) · [Issues](https://github.com/Aniforka/deckdrop/issues)
