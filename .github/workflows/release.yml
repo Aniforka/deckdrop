@@ -17,14 +17,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  # builds and tests with a read-only token: nothing installed here from PyPI or apt
+  # can touch the release; the write token lives only in the small publish job below
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      new: ${{ steps.ver.outputs.new }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -33,6 +39,9 @@ jobs:
         id: ver
         run: |
           ver=$(python -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('src/deckdrop/__init__.py', encoding='utf-8').read()).group(1))")
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "unexpected version: $ver"; exit 1
+          fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
             echo "v$ver already released, nothing to do"
@@ -58,14 +67,44 @@ jobs:
         if: steps.ver.outputs.new == 'true'
         run: python -m unittest -v tests/test_user_data.py
 
-      - name: Publish release
+      - name: Release files
         if: steps.ver.outputs.new == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
           VER: ${{ steps.ver.outputs.version }}
         run: |
-          python tools/changelog.py "$VER" > notes.md
-          gh release create "v$VER" dist/deckdrop.py install.sh \
+          mkdir -p out
+          cp dist/deckdrop.py install.sh out/
+          python tools/changelog.py "$VER" > out/notes.md
+          (cd out && sha256sum deckdrop.py install.sh)
+
+      - uses: actions/upload-artifact@v4
+        if: steps.ver.outputs.new == 'true'
+        with:
+          name: release
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: needs.build.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: out
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VER: ${{ needs.build.outputs.version }}
+        run: |
+          cd out
+          gh release create "v$VER" deckdrop.py install.sh \
             --target "$GITHUB_SHA" \
             --title "DeckDrop $VER" \
             --notes-file notes.md \

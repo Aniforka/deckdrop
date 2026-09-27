@@ -24,6 +24,12 @@ WantedBy=default.target
 """
 
 
+def unit_arg(value):
+    """One ExecStart argument: quoted, so a path with spaces stays whole; % is systemd's specifier."""
+    text = str(value).replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
 def install():
     if bundle.PATH is None:
         raise SystemExit("the service is not installed from src/: build the file (python tools/build.py) "
@@ -33,7 +39,7 @@ def install():
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     (unit_dir / "deckdrop.service").write_text(
-        UNIT.format(python=sys.executable, script=Path(bundle.PATH).resolve()))
+        UNIT.format(python=unit_arg(sys.executable), script=unit_arg(Path(bundle.PATH).resolve())))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "deckdrop.service"], check=True)
     # restart, not `enable --now`: on an upgrade the unit is already active and
