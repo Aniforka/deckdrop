@@ -289,10 +289,21 @@ def check_internet():
     return item("ok" if ok else "warn", title, "; ".join(parts))
 
 
+RELEASE_ASSET = re.compile(r"^(https://github\.com/[^/]+/[^/]+)/releases/(?:latest/)?download/", re.I)
+
+
+def update_probe(url):
+    """What to knock on to see that updates can be fetched. Not a release file itself: GitHub counts
+    even a HEAD on it as a download, so every self-check (and every test run) would add one. The
+    releases page answers from the same place without touching the counter."""
+    m = RELEASE_ASSET.match(url)
+    return m.group(1) + "/releases/latest" if m else url
+
+
 def check_update():
     title = tr("perf.c.update")
     url = STATE.get("update_url") or UPDATE_URL_DEFAULT
-    ms, err = reach(None, url)
+    ms, err = reach(None, update_probe(url))
     if ms is None:
         return item("warn", title, tr("perf.c.update.fail", url=url, error=err))
     return item("ok", title, tr("perf.c.update.ok", url=url, ms=ms))

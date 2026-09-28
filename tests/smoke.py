@@ -46,7 +46,10 @@ def main():
     with tempfile.TemporaryDirectory() as home:
         env = dict(os.environ, HOME=home, DECKDROP_PORT=str(port), DECKDROP_CEF="0",
                    DECKDROP_STATE=str(Path(home) / "state.json"), DECKDROP_GAMES=str(Path(home) / "Games"),
-                   DECKDROP_STEAM=str(Path(home) / "no-steam"), DECKDROP_PIN="1234")
+                   DECKDROP_STEAM=str(Path(home) / "no-steam"), DECKDROP_PIN="1234",
+                   # the self-check below knocks on the update link: not on the GitHub release, whose
+                   # download counter would count every test run
+                   DECKDROP_UPDATE_URL="http://127.0.0.1:9/deckdrop.py")
         proc = subprocess.Popen([sys.executable, str(SCRIPT)], env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:

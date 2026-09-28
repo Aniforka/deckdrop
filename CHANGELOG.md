@@ -24,6 +24,11 @@ takes its description from its section, so a version cannot be released without 
   Valve's templates or DeckDrop's settings. If a Steam update clears the templates, DeckDrop
   puts its layouts back when it starts.
 
+**Fixed**
+- Settings → Performance → self-check no longer counts as a download of `deckdrop.py` on GitHub:
+  it checks that the releases page answers instead of knocking on the file. The tests do not touch
+  GitHub at all, so the download counter shows real downloads again.
+
 ### Русский
 
 **Добавлено**
@@ -41,6 +46,11 @@ takes its description from its section, so a version cannot be released without 
 - Сохранение, переименование и удаление меняют только собственные файлы раскладок DeckDrop:
   ни раскладки игр, ни шаблоны Valve, ни настройки DeckDrop не трогаются. Если обновление Steam
   очистит шаблоны, DeckDrop вернёт свои раскладки при запуске.
+
+**Исправлено**
+- Самопроверка (Настройки → Производительность) больше не засчитывается на GitHub как скачивание
+  `deckdrop.py`: она проверяет, что отвечает страница релизов, а не сам файл. Тесты к GitHub
+  вообще не обращаются, так что счётчик скачиваний снова показывает настоящие скачивания.
 
 ## 0.4.2 — 2026-09-28
 

@@ -95,7 +95,8 @@ def main():
     (home / ".steam" / "registry.vdf").write_text('"Registry" { "HKCU" { "Software" { "Valve" { "Steam" '
                                                   '{ "language" "russian" } } } } }', "utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
-    env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(steam))
+    env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(steam),
+               DECKDROP_UPDATE_URL="http://127.0.0.1:9/deckdrop.py")   # the self-check: not the GitHub release
     app = Running(PROGRAM, env)
     failed = []
     try:
