@@ -386,36 +386,43 @@ PLAIN = r"""const wait = (p, ms) => Promise.race([Promise.resolve(p), new Promis
   const plain = v => { try { return JSON.parse(JSON.stringify(v, (k, x) => typeof x === 'bigint' ? String(x)
     : typeof x === 'function' ? undefined : x instanceof Map ? Array.from(x.entries()) : x)); } catch (e) { return String(v); } };"""
 
+# the Deck's own controls are not controller 0: Steam numbers them itself (15 on a Deck with SteamOS 3.7)
+DECK_INDEX = r"""(() => {
+  const cs = window.ControllerStore || {}, list = cs.m_controllerList || [];
+  const deck = list.find(c => c.eControllerType === 4) || list[0];
+  return deck ? deck.nControllerIndex : cs.m_nLastValidActiveControllerIndex;
+})()"""
+
 ASK = r"""(async () => {
-  const I = SteamClient.Input, out = {};
+  const I = SteamClient.Input, out = {}, cs = window.ControllerStore || {}, cfg = window.controllerConfiguratorStore || {};
   PLAIN
-  out.globals = Object.keys(window).filter(k => /controller|input/i.test(k));
-  for (const k of out.globals) {
-    const o = window[k];
-    if (!o || typeof o !== 'object') continue;
-    out['keys of ' + k] = Object.keys(o).slice(0, 80);
-    for (const f of Object.keys(o))
-      if (/controller|active|index|slot/i.test(f) && typeof o[f] !== 'function') out[k + '.' + f] = plain(o[f]);
-  }
-  try { out.GetControllerPreviouslySeen = plain(await wait(I.GetControllerPreviouslySeen(), 3000)); }
-  catch (e) { out.GetControllerPreviouslySeen = 'error: ' + e; }
-  for (let i = 0; i < 4; i++) {
-    try { out['GetConfigForAppAndController(appid, ' + i + ')'] = plain(await wait(I.GetConfigForAppAndController(APPID, i), 3000)); }
+  const short = v => { const p = plain(v); return JSON.stringify(p).length > 4000 ? '(' + JSON.stringify(p).length + ' characters)' : p; };
+  out.controllers = (cs.m_controllerList || []).map(c => ({name: c.strName, index: c.nControllerIndex, type: c.eControllerType, serial: c.strSerialNumber}));
+  out.lastActiveIndex = cs.m_nLastValidActiveControllerIndex;
+  out.deckIndex = DECK_INDEX;
+  for (const k of ['m_appId', 'm_unControllerIndex', 'm_eConfigSelectionType', 'm_mapCurrentSelectedConfigs', 'm_mapAppConfigs'])
+    out['controllerConfiguratorStore.' + k] = short(cfg[k]);
+  const idx = [...new Set([out.deckIndex, out.lastActiveIndex].filter(i => i !== undefined && i !== null))];
+  for (const i of idx) {
+    try { out['GetConfigForAppAndController(appid, ' + i + ')'] = short(await wait(I.GetConfigForAppAndController(APPID, i), 3000)); }
     catch (e) { out['GetConfigForAppAndController(appid, ' + i + ')'] = 'error: ' + e; }
   }
   return out;
-})()""".replace("PLAIN", PLAIN)
+})()""".replace("PLAIN", PLAIN).replace("DECK_INDEX", DECK_INDEX)
 
 SELECT = r"""(async () => {
   const I = SteamClient.Input;
   PLAIN
-  const get = async () => { try { return plain(await wait(I.GetConfigForAppAndController(APPID, INDEX), 3000)); } catch (e) { return 'error: ' + e; } };
+  const idx = INDEX === null ? DECK_INDEX : INDEX;
+  const get = async () => { try { const c = plain(await wait(I.GetConfigForAppAndController(APPID, idx), 3000));
+    return c && typeof c === 'object' ? Object.fromEntries(Object.entries(c).filter(([k, v]) => JSON.stringify(v).length < 600)) : c; }
+    catch (e) { return 'error: ' + e; } };
   const before = await get();
   let result;
-  try { result = plain(await wait(I.SetSelectedConfigForApp(APPID, INDEX, URL, false, 1), 5000)); } catch (e) { result = 'error: ' + e; }
+  try { result = plain(await wait(I.SetSelectedConfigForApp(APPID, idx, URL, false, 1), 5000)); } catch (e) { result = 'error: ' + e; }
   await new Promise(r => setTimeout(r, 2500));
-  return {before, SetSelectedConfigForApp: result === undefined ? '(undefined)' : result, after: await get()};
-})()""".replace("PLAIN", PLAIN)
+  return {controllerIndex: idx, before, SetSelectedConfigForApp: result === undefined ? '(undefined)' : result, after: await get()};
+})()""".replace("PLAIN", PLAIN).replace("DECK_INDEX", DECK_INDEX)
 
 
 def run_js(port, title, js):
@@ -440,8 +447,9 @@ def select_layout(steam, port, appid, url, index):
     head("backup before switching")
     say(f"  {base} -> {backup / base.name}")
     before = configs_state(steam)
-    js = SELECT.replace("APPID", str(int(appid))).replace("INDEX", str(int(index))).replace("URL", json.dumps(url))
-    run_js(port, f"switch appid {appid}, controller {index}, to {url}", js)
+    js = SELECT.replace("APPID", str(int(appid))).replace("INDEX", "null" if index is None else str(int(index)))
+    js = js.replace("URL", json.dumps(url))
+    run_js(port, f"switch appid {appid}, controller {'of the Deck' if index is None else index}, to {url}", js)
     after = configs_state(steam)
     head("layout files Steam changed")
     for k in sorted(set(before) | set(after)):
@@ -559,7 +567,7 @@ def main():
     ap.add_argument("--cleanup", action="store_true", help="remove the probe files")
     ap.add_argument("--ask", metavar="APPID", type=int, help="what Steam says about the game's layout")
     ap.add_argument("--select", nargs=2, metavar=("APPID", "URL"), help="switch the game to layout URL")
-    ap.add_argument("--index", type=int, default=0, help="controller index for --select (default 0)")
+    ap.add_argument("--index", type=int, help="controller index for --select (default: the Deck's own)")
     ap.add_argument("--report", default=str(Path.home() / "deckdrop-layouts-probe.txt"))
     ap.add_argument("--no-serve", action="store_true", help="do not share the report on the network")
     ap.add_argument("--serve-port", type=int, default=8089)
