@@ -125,6 +125,14 @@ class LayoutsProbeTest(unittest.TestCase):
         with urllib.request.urlopen(url + "/download", timeout=10) as r:
             self.assertIn("attachment", r.headers["Content-Disposition"])
 
+    def test_select_backs_up_first_and_survives_no_steam(self):
+        before = self.files()
+        text = self.run_probe("--port", "9", "--select", "3000000001", "template://controller_neptune_deckdrop_probe.vdf")
+        self.assertIn("not available", text)
+        backups = list((self.home / "deckdrop-probe-backup").glob("*/Steam Controller Configs/123/config/some game"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self.files(), before, "nothing in Steam changed")
+
     def test_unknown_game(self):
         self.assertIn("pick folder names", self.run_probe("--copy", "some game", "nope"))
 

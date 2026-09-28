@@ -6,13 +6,18 @@ Run it on the Deck (desktop or over SSH) and send back the report it writes:
     python3 layouts_probe.py                    look around, change nothing
     python3 layouts_probe.py --copy FROM TO     also copy a layout of game FROM to game TO
     python3 layouts_probe.py --cleanup          remove those copies again
+    python3 layouts_probe.py --ask APPID        what the running Steam says about a game's layout
+    python3 layouts_probe.py --select APPID URL ask Steam to switch the game to layout URL
 
 FROM and TO are folder names from the "Steam Controller Configs" list of the report (an AppID
 or the name of a non-Steam game). --copy puts FROM's layout, titled "DeckDrop probe", both
 among Steam's templates and among TO's own saved layouts, and asks Steam what it sees for TO. The report goes to ~/deckdrop-layouts-probe.txt and to the screen,
 and then it is shared on the home network until Ctrl+C: the script prints a link to open on a
 phone or PC (only the report is served, nothing else). --no-serve skips that.
-Only --copy and --cleanup write anything: the probe files, nothing else.
+APPID is the game's Steam AppID (DeckDrop shows it on the game page). --select first copies
+all of Steam Controller Configs to ~/deckdrop-probe-backup/<time>, then asks Steam to switch,
+and reports what Steam answered and which layout files it changed.
+Only --copy and --cleanup write anything themselves: the probe files, nothing else.
 """
 import argparse
 import datetime
@@ -20,7 +25,9 @@ import http.server
 import importlib.util
 import json
 import os
+import hashlib
 import re
+import shutil
 import socket
 import sys
 import urllib.request
@@ -375,6 +382,75 @@ def steam_config(port, appid):
         say(f"  not available: {e}")
 
 
+PLAIN = r"""const wait = (p, ms) => Promise.race([Promise.resolve(p), new Promise(r => setTimeout(() => r('(no answer)'), ms))]);
+  const plain = v => { try { return JSON.parse(JSON.stringify(v, (k, x) => typeof x === 'bigint' ? String(x)
+    : typeof x === 'function' ? undefined : x instanceof Map ? Array.from(x.entries()) : x)); } catch (e) { return String(v); } };"""
+
+ASK = r"""(async () => {
+  const I = SteamClient.Input, out = {};
+  PLAIN
+  out.globals = Object.keys(window).filter(k => /controller|input/i.test(k));
+  for (const k of out.globals) {
+    const o = window[k];
+    if (!o || typeof o !== 'object') continue;
+    out['keys of ' + k] = Object.keys(o).slice(0, 80);
+    for (const f of Object.keys(o))
+      if (/controller|active|index|slot/i.test(f) && typeof o[f] !== 'function') out[k + '.' + f] = plain(o[f]);
+  }
+  try { out.GetControllerPreviouslySeen = plain(await wait(I.GetControllerPreviouslySeen(), 3000)); }
+  catch (e) { out.GetControllerPreviouslySeen = 'error: ' + e; }
+  for (let i = 0; i < 4; i++) {
+    try { out['GetConfigForAppAndController(appid, ' + i + ')'] = plain(await wait(I.GetConfigForAppAndController(APPID, i), 3000)); }
+    catch (e) { out['GetConfigForAppAndController(appid, ' + i + ')'] = 'error: ' + e; }
+  }
+  return out;
+})()""".replace("PLAIN", PLAIN)
+
+SELECT = r"""(async () => {
+  const I = SteamClient.Input;
+  PLAIN
+  const get = async () => { try { return plain(await wait(I.GetConfigForAppAndController(APPID, INDEX), 3000)); } catch (e) { return 'error: ' + e; } };
+  const before = await get();
+  let result;
+  try { result = plain(await wait(I.SetSelectedConfigForApp(APPID, INDEX, URL, false, 1), 5000)); } catch (e) { result = 'error: ' + e; }
+  await new Promise(r => setTimeout(r, 2500));
+  return {before, SetSelectedConfigForApp: result === undefined ? '(undefined)' : result, after: await get()};
+})()""".replace("PLAIN", PLAIN)
+
+
+def run_js(port, title, js):
+    head(title)
+    try:
+        say(json.dumps(cdp_eval(port, js), indent=1, ensure_ascii=False))
+    except Exception as e:  # noqa: BLE001
+        say(f"  not available: {e}")
+
+
+def configs_state(steam):
+    base = steam / "steamapps/common/Steam Controller Configs"
+    return {str(p.relative_to(base)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in base.rglob("*") if p.is_file()} if base.is_dir() else {}
+
+
+def select_layout(steam, port, appid, url, index):
+    base = steam / "steamapps/common/Steam Controller Configs"
+    backup = Path.home() / "deckdrop-probe-backup" / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if base.is_dir():
+        shutil.copytree(base, backup / base.name)
+    head("backup before switching")
+    say(f"  {base} -> {backup / base.name}")
+    before = configs_state(steam)
+    js = SELECT.replace("APPID", str(int(appid))).replace("INDEX", str(int(index))).replace("URL", json.dumps(url))
+    run_js(port, f"switch appid {appid}, controller {index}, to {url}", js)
+    after = configs_state(steam)
+    head("layout files Steam changed")
+    for k in sorted(set(before) | set(after)):
+        if before.get(k) != after.get(k):
+            say(f"  {'added' if k not in before else 'removed' if k not in after else 'changed'}: {k}")
+            if k in after and k.endswith(".vdf") and k.split("/")[-1].startswith("configset"):
+                dump(base / k)
+
+
 def template_dir(steam):
     base = steam / "controller_base"
     return next((base / n for n in ("templates", "template") if (base / n).is_dir()), base / "templates")
@@ -481,6 +557,9 @@ def main():
     ap.add_argument("--no-cdp", action="store_true", help="do not ask the running Steam")
     ap.add_argument("--copy", nargs=2, metavar=("FROM", "TO"), help="copy FROM's layout to TO and to the templates")
     ap.add_argument("--cleanup", action="store_true", help="remove the probe files")
+    ap.add_argument("--ask", metavar="APPID", type=int, help="what Steam says about the game's layout")
+    ap.add_argument("--select", nargs=2, metavar=("APPID", "URL"), help="switch the game to layout URL")
+    ap.add_argument("--index", type=int, default=0, help="controller index for --select (default 0)")
     ap.add_argument("--report", default=str(Path.home() / "deckdrop-layouts-probe.txt"))
     ap.add_argument("--no-serve", action="store_true", help="do not share the report on the network")
     ap.add_argument("--serve-port", type=int, default=8089)
@@ -491,6 +570,12 @@ def main():
     say(f"Steam: {steam}")
     if args.cleanup:
         cleanup(steam)
+    elif args.ask or args.select:
+        list_shortcuts(steam)
+        appid = args.ask or int(args.select[0])
+        run_js(args.port, f"what the running Steam says about appid {appid} (read only)", ASK.replace("APPID", str(appid)))
+        if args.select:
+            select_layout(steam, args.port, appid, args.select[1], args.index)
     else:
         controller_configs(steam)
         userdata(steam)
