@@ -31,10 +31,11 @@ STATE = {
     "proxy_downloads": False,     # also route game downloads through it
     "mega_verify": True,          # check Mega's own checksum after a download
     "cef_enabled": CEF_ENABLED,
+    "default_layout": "",         # id of the saved controller layout new games get; "" = Steam's own
 }
 SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "archive_passwords",
                 "default_disk", "cef_enabled", "update_url", "proxy", "proxy_downloads",
-                "mega_verify")
+                "mega_verify", "default_layout")
 PROTECTED_KEYS = ("proxy",)   # may carry credentials: PIN required to read or change
 
 

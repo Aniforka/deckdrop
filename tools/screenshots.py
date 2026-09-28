@@ -36,7 +36,9 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "tests"))
 import build  # noqa: E402
+from fake_cdp import FakeSteam  # noqa: E402  (Steam control, so the page offers to apply layouts)
 
 PIN = "1234"
 MEDIA_PASSWORD = "deckdrop"
@@ -52,6 +54,17 @@ GAMES = [
 NEW_GAME = ("Starlight Harbor", "Starlight Harbor.exe")
 ARCHIVE = "Starlight Harbor.zip"
 USER = "10000001"
+LAYOUT_GAME = "Paper Lanterns"
+# controller layouts Steam has for LAYOUT_GAME: (file, title, based on)
+LAYOUTS = [("controller_neptune.vdf", "#Title", "Gamepad with Mouse Trackpad"),
+           ("reading_0.vdf", {"ru": "Для чтения", "en": "Reading"}, None)]
+SAVED = {"ru": ["Визуальные новеллы", "Шутеры"], "en": ["Visual novels", "Shooters"]}
+
+
+def layout_vdf(title, based_on):
+    return (f'"controller_mappings"\n{{\n\t"version"\t\t"3"\n\t"title"\t\t"{title}"\n'
+            f'\t"controller_type"\t\t"controller_neptune"\n\t"localization"\n\t{{\n\t\t"english"\n\t\t{{\n'
+            f'\t\t\t"title"\t\t"{based_on or title}"\n\t\t}}\n\t}}\n\t"group"\n\t{{\n\t\t"id"\t\t"0"\n\t}}\n}}\n')
 
 
 def font(size, bold=True):
@@ -166,6 +179,12 @@ def demo_home(home, lang):
             for f in (shots / name, shots / "thumbnails" / name):
                 os.utime(f, (when, when))
     (ud / "config" / "shortcuts.vdf").write_bytes(shortcuts_vdf(entries))
+    # Steam's layouts for one game, and its templates folder
+    cfg = steam / "steamapps" / "common" / "Steam Controller Configs" / USER / "config" / LAYOUT_GAME.lower()
+    cfg.mkdir(parents=True)
+    for name, title, based_on in LAYOUTS:
+        (cfg / name).write_text(layout_vdf(title if isinstance(title, str) else title[lang], based_on), "utf-8")
+    (steam / "controller_base" / "templates").mkdir(parents=True)
     state = home / ".config" / "deckdrop" / "state.json"
     state.parent.mkdir(parents=True)
     state.write_text(json.dumps({"admin_pin": PIN, "added": added, "default_disk": "internal",
@@ -243,8 +262,12 @@ def shoot(lang, out, chromium):
     program.write_text(build.build(), "utf-8")
     port = free_port()
     env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
-    env.update(HOME=str(home), DECKDROP_PORT=str(port), DECKDROP_STEAM=str(steam), DECKDROP_CEF="0",
-               DECKDROP_DISKS=f"microSD={sd / 'Games'}")
+    fake = FakeSteam()
+    lantern = next(e for e in json.loads((home / ".config/deckdrop/state.json").read_text())["added"].items()
+                   if LAYOUT_GAME in e[0])
+    fake.current[lantern[1]["appid"]] = ("", "")
+    env.update(HOME=str(home), DECKDROP_PORT=str(port), DECKDROP_STEAM=str(steam), DECKDROP_CEF="1",
+               DECKDROP_CEF_PORT=str(fake.port), DECKDROP_DISKS=f"microSD={sd / 'Games'}")
     app = subprocess.Popen([sys.executable, str(program)], env=env, stdout=subprocess.DEVNULL,
                            stderr=subprocess.STDOUT)
     url = f"http://127.0.0.1:{port}/"
@@ -338,6 +361,32 @@ def shoot(lang, out, chromium):
             page.wait_for_timeout(2500)
             png(page.screenshot(full_page=True, clip={"x": 0, "y": 0, "width": 390, "height": 1190}),
                 out / "game.png", 780)
+            # phone: the game's controller layouts, two saved in DeckDrop, one applied
+            lantern_dir = str(Path(lantern[0]).parent)
+            q = f"game={urllib.parse.quote(lantern_dir)}&exe={urllib.parse.quote(Path(lantern[0]).name)}"
+            sources = json.loads(urllib.request.urlopen(url + "api/layouts/sources?" + q).read())["sources"]
+            ids = [post(port, "/api/layouts/save", {"game": lantern_dir, "exe": Path(lantern[0]).name,
+                                                    "src": src["src"], "name": name})["id"]
+                   for src, name in zip(sources, SAVED[lang])]
+            post(port, "/api/layouts/apply", {"game": lantern_dir, "exe": Path(lantern[0]).name, "id": ids[0]})
+            # what Steam then reports for the game, as the Deck did
+            fake.selected.clear()
+            fake.current[lantern[1]["appid"]] = (f"template://controller_neptune_deckdrop_{ids[0]}.vdf",
+                                                 "DeckDrop: " + SAVED[lang][0])
+            post(port, "/api/settings", {"default_layout": ids[0]})
+            page.goto(url + "#g=" + urllib.parse.quote(lantern_dir))
+            page.wait_for_timeout(2500)
+            card = page.locator("#gpLayoutsCard")
+            card.scroll_into_view_if_needed()
+            page.wait_for_timeout(300)
+            png(card.screenshot(), out / "layouts.png", 780)
+            page.goto(url)
+            page.wait_for_timeout(1200)
+            page.click("#tabSettings")
+            page.wait_for_timeout(1200)
+            card = page.locator("#sLayouts")
+            card.scroll_into_view_if_needed()
+            png(card.screenshot(), out / "layouts-settings.png", 780)
             # phone: the gallery
             page.goto(url)
             page.click("#tabMedia")
@@ -356,6 +405,7 @@ def shoot(lang, out, chromium):
     finally:
         app.terminate()
         srv.shutdown()
+        fake.close()
         if own_home:
             shutil.rmtree(home, ignore_errors=True)
     print(f"{lang}: " + ", ".join(f"{f.name} {f.stat().st_size // 1024} KiB" for f in sorted(out.iterdir())))

@@ -10,6 +10,7 @@ from .diagnostics import PENDING_THREAD
 from .service import install, uninstall
 from .state import STATE, ensure_pin, load_state
 from .steam.cdp import CDP
+from .steam.layouts import sync_templates
 from .steam.shortcuts import pending_loop
 from .storage import default_root
 from .web.server import Handler, local_urls
@@ -25,6 +26,10 @@ def main():
         log(f"new admin PIN: {STATE['admin_pin']} (change it on the Settings tab)")
     (default_root() / "_inbox").mkdir(parents=True, exist_ok=True)
     CDP.ensure_marker()
+    try:
+        sync_templates()          # a Steam update may have wiped the layouts DeckDrop offers as templates
+    except Exception as e:  # noqa: BLE001
+        log(f"layout templates: {e}")
     threading.Thread(target=pending_loop, name=PENDING_THREAD, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True

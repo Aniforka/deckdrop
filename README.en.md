@@ -33,6 +33,8 @@ same Wi-Fi, and from the couch you can:
 - **drop a patch** straight into the game folder, or unpack a patch archive over the game after
   seeing exactly what it will replace;
 - **back up saves** to a zip and restore them;
+- **share controller layouts between games**: save a game's layout and apply it to any other,
+  or give every new game your layout;
 - **browse Steam screenshots and recordings** in a password-protected gallery and save them
   to your phone;
 - do all of this **in English or Russian**: the language follows Steam on the Deck.
@@ -50,6 +52,10 @@ developer mode, and SteamOS updates do not break it.
 <tr>
 <td align="center" valign="top" width="50%"><img src="docs/media/en/media.png" width="280" alt="Gallery"><br><sub>Screenshot gallery</sub></td>
 <td align="center" valign="top" width="50%"><img src="docs/media/en/settings.png" width="280" alt="Settings"><br><sub>Settings and language</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top" width="50%"><img src="docs/media/en/layouts.png" width="280" alt="Controller layouts on the game page"><br><sub>Controller layouts: save and apply</sub></td>
+<td align="center" valign="top" width="50%"><img src="docs/media/en/layouts-settings.png" width="280" alt="Saved controller layouts in Settings"><br><sub>Saved layouts and the one for new games</sub></td>
 </tr>
 </table>
 
@@ -90,6 +96,7 @@ That's it. DeckDrop starts by itself every time the Deck boots and keeps working
   - [Game files and patches](#game-files-and-patches)
 - [Artwork](#artwork)
 - [Saves](#saves)
+- [Controller layouts](#controller-layouts)
 - [Archives](#archives)
 - [Media](#media)
 - [Supported links](#supported-links)
@@ -275,13 +282,13 @@ Steam keeps its settings in memory and rewrites its files on exit, so edits to `
 `shortcuts.vdf` made while it runs are lost. DeckDrop does what Decky Loader does: it turns on
 Steam's local CEF debugging port (the `.cef-enable-remote-debugging` marker file in the Steam
 folder) and asks the running client to add a shortcut with the right name, set Proton, apply
-artwork or remove the shortcut.
+artwork, select a [controller layout](#controller-layouts) or remove the shortcut.
 
 - The port listens on the Deck only (localhost); it is not reachable from outside.
 - It becomes active after **one Deck reboot**. The status is shown at the bottom of the page
   and in Settings.
-- Until then, games are added with `steamos-add-to-steam`, and the name and Proton are queued
-  and applied automatically once control is available.
+- Until then, games are added with `steamos-add-to-steam`, and the name, Proton and the layout
+  for new games are queued and applied automatically once control is available.
 - Turning it off in Settings removes the marker; Steam closes the port on its next start.
 
 ## Passwords and PIN
@@ -339,6 +346,8 @@ DeckDrop copies and moves nothing: the folder stays where it is and shows up in 
   can be changed later with the pencil next to the title.
 - **Artwork**: all five Steam slots with previews, see [Artwork](#artwork).
 - **Saves**: what goes into the backup, "download backup" and "import zip".
+- **Controller layouts**: the game's layouts in Steam, each can be saved to DeckDrop, see
+  [Controller layouts](#controller-layouts).
 - **Actions**: hide from the list, delete from the Deck with the PIN (a check box removes the
   Steam shortcut too).
 - **Details**: folder, size, name in Steam, AppID, Proton, artwork source.
@@ -388,6 +397,40 @@ similar), the user folders of the Proton prefix (`AppData`, `Documents`, `Saved 
 system clutter) and, for Linux builds, the Ren'Py and Unity folders in your home. Before an
 import DeckDrop backs up the current saves to `~/.cache/deckdrop`, and files from the archive
 cannot escape the target folders.
+
+## Controller layouts
+
+Steam keeps a layout with the game it was made for: a layout saved in one game is not offered
+in another. DeckDrop carries it over.
+
+1. On the game page, the "Controller layouts" card lists the layouts Steam has for this game:
+   its own one and the ones saved under a name. "Save to DeckDrop" asks for a name.
+2. To use it in a game: "Layout from DeckDrop" → "Apply" on that game's page (needs
+   [Steam control](#steam-control)), or on the Deck: controller settings → Templates →
+   "DeckDrop: name". If it is not there, restart Steam.
+
+"Now in Steam" shows the game's current layout. Applying selects the saved layout the way Steam's
+own picker does and checks that Steam reports it; the game's previous layout stays in Steam and
+can be picked again there.
+
+**Layout for new games** (Settings → Controller layouts): one of the saved layouts, applied when
+DeckDrop adds a game to Steam; "—" by default, Steam picks as usual. Without Steam control it is
+applied once control is on, like a pending name or Proton.
+
+Settings → Controller layouts lists the saved layouts: rename, download as `.vdf`, delete, or
+upload a `.vdf`, for example one downloaded from another Deck. Deleting removes the layout from
+DeckDrop and from the templates; a game where it is already chosen keeps its layout, as Steam
+copies a template into the game when you pick it.
+
+DeckDrop keeps its copies in `~/.config/deckdrop/layouts` and puts each one into Steam's
+templates folder (`~/.local/share/Steam/controller_base/templates`) as
+`controller_neptune_deckdrop_<id>.vdf`. It never changes a game's own layouts or Valve's
+templates, and applying a layout is asked of Steam, which records the choice itself.
+A Steam update may clear that folder: DeckDrop puts its templates back when it
+starts and whenever the list is opened.
+
+Only layouts of the Deck's own controls can be saved. A layout made for a game with its own
+in-game actions (Steam Input API) only makes sense in that game.
 
 ## Archives
 
@@ -462,7 +505,7 @@ Settings has a proxy used **by DeckDrop only**; the rest of the Deck goes online
 
 Open them with the tab or the ⚙ in the header; every switch saves immediately. They cover the
 interface language, the default Proton for new games, preferring Linux builds, Steam control,
-automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, the Mega
+saved [controller layouts](#controller-layouts) and the layout for new games, automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, the Mega
 checksum check, archive passwords, the update link, changing the PIN, and disk and address
 details.
 

@@ -27,6 +27,7 @@
   <div class="frow"><label for="gpFDir">{{files.path}}</label><input id="gpFDir" type="text" placeholder="{{files.path_placeholder}}" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
   <div class="hint" id="gpFWhere"></div><div id="gpFList"></div>
  </div>
+ <div class="card" id="gpLayoutsCard" hidden><h2>{{layouts.title}}</h2><div class="hint">{{layouts.hint}}</div><div id="gpLayouts"></div></div>
  <div class="card"><h2>{{game.actions}}</h2><div class="acts" id="gpActs"></div></div>
  <div class="card"><h2>{{game.details}}</h2><div class="hint" id="gpInfo"></div></div>
 </div>
@@ -56,6 +57,11 @@
    <div class="hint" style="margin-top:6px">{{set.steam.compat_hint}}</div></div>
   <label class="chk"><input type="checkbox" id="sLinux" data-set="prefer_linux">{{set.steam.prefer_linux}}</label>
   <label class="chk"><input type="checkbox" id="sCef" data-set="cef_enabled">{{set.steam.cef}}</label>
+ </div>
+ <div class="card" id="sLayouts"><h2>{{layouts.title}} <span class="acts"><button class="ghost sm" id="lyUp">{{layouts.upload}}</button></span></h2>
+  <div class="hint">{{layouts.set_hint}}</div><div class="hint err" id="lyWarn" hidden>{{layouts.no_templates}}</div><div id="lyList"></div>
+  <div class="frow"><label for="sDefLayout">{{layouts.for_new}}</label><select id="sDefLayout" data-set="default_layout"></select>
+   <div class="hint" style="margin-top:6px">{{layouts.for_new_hint}}</div></div>
  </div>
  <div class="card"><h2>{{set.covers.title}}</h2>
   <label class="chk"><input type="checkbox" id="sVndb" data-set="vndb_auto">{{set.covers.vndb_auto}}</label>

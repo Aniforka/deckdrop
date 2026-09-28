@@ -16,7 +16,11 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_layouts import layout, shortcuts_vdf  # noqa: E402
 from test_user_data import Running  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from deckdrop.steam import layouts as steam_layouts  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PROGRAM = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "dist" / "deckdrop.py")
@@ -25,21 +29,81 @@ NOT_KEYS = {"e.g", "i.e", "deckdrop.py", "mega.nz", "vndb.org", "api.vndb.org", 
             "manifest.json", "state.json", "github.com"}   # the last two: paths and links in the self-check
 
 
+# Steam as the Deck showed it: its own controls are controller 15, and a layout is selected only
+# with all five arguments of SetSelectedConfigForApp, for that controller
+STEAM_STUB = """
+window.ControllerStore = {m_nLastValidActiveControllerIndex: LAST, m_controllerList: CONTROLLERS};
+const chosen = {};
+window.SteamClient = {Input: {
+  async GetConfigForAppAndController(appid, index) {
+    return index === 15 ? {bConfigurationEnabled: true, unControllerIndex: 15, URL: chosen[appid] || 'autosave:///x/controller_neptune.vdf',
+                           Title: chosen[appid] ? 'DeckDrop: VN' : 'Gamepad'}
+                        : {bConfigurationEnabled: false, unControllerIndex: index};
+  },
+  async SetSelectedConfigForApp(appid, index, url, preview, how) {
+    if (!STUCK && index === 15 && preview === false && how === 1) chosen[appid] = url;
+  },
+}};
+"""
+
+
+def steam_calls(browser):
+    """The expressions DeckDrop sends to Steam, run in a browser against the stand-in above."""
+    problems = []
+    deck = '[{strName: "Steam Deck Controller", nControllerIndex: 15, eControllerType: 4}]'
+    url = steam_layouts.template_url("0a1b2c3d")
+    cases = (("deck", deck, "15", "false", {"ok": True, "index": 15, "url": url, "title": "DeckDrop: VN"}),
+             ("only the last active one", "[]", "15", "false", {"ok": True, "index": 15, "url": url}),
+             ("steam does not switch", deck, "15", "true", {"ok": False, "reason": "not_switched", "index": 15}),
+             ("no controller", "[]", "undefined", "false", {"ok": False, "reason": "no_controller"}))
+    for label, controllers, last, stuck, want in cases:
+        page = browser.new_page()
+        page.add_init_script(STEAM_STUB.replace("CONTROLLERS", controllers).replace("LAST", last).replace("STUCK", stuck))
+        page.goto("about:blank")
+        cur = page.evaluate(steam_layouts._js(steam_layouts.CURRENT_JS, 42))
+        got = page.evaluate(steam_layouts._js(steam_layouts.APPLY_JS, 42, url))
+        got = {k: v for k, v in got.items() if k in want}
+        after = page.evaluate(steam_layouts._js(steam_layouts.CURRENT_JS, 42))
+        if got != want:
+            problems.append(f"apply, {label}: {got} != {want}")
+        if last == "15" and (cur or {}).get("title") != "Gamepad":
+            problems.append(f"current, {label}: {cur}")
+        if want["ok"] and (after or {}).get("url") != url:
+            problems.append(f"current after apply: {after}")
+        if label == "no controller" and cur is not None:
+            problems.append(f"current without a controller: {cur}")
+        page.close()
+    print("steam calls:", problems or "ok")
+    return problems
+
+
 def main():
     home = Path(tempfile.mkdtemp())
     game = home / "Games" / "Cool Game"
     game.mkdir(parents=True)
     (game / "Game.exe").write_bytes(b"MZ")
+    # the game is in Steam and has a controller layout there, so its page offers to save it
+    steam = home / "Steam"
+    (steam / "userdata" / "123" / "config").mkdir(parents=True)
+    (steam / "userdata" / "123" / "config" / "shortcuts.vdf").write_bytes(
+        shortcuts_vdf("Cool Game", game / "Game.exe", 3000000001))
+    cfg = steam / "steamapps" / "common" / "Steam Controller Configs" / "123" / "config" / "cool game"
+    cfg.mkdir(parents=True)
+    (cfg / "controller_neptune.vdf").write_text(layout("#Title"), "utf-8")
+    (steam / "controller_base" / "templates").mkdir(parents=True)
     (home / ".steam").mkdir()                          # the Deck's Steam is in Russian
     (home / ".steam" / "registry.vdf").write_text('"Registry" { "HKCU" { "Software" { "Valve" { "Steam" '
                                                   '{ "language" "russian" } } } } }', "utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
-    env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(home / "no-steam"))
+    env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(steam),
+               DECKDROP_UPDATE_URL="http://127.0.0.1:9/deckdrop.py")   # the self-check: not the GitHub release
     app = Running(PROGRAM, env)
     failed = []
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM") or None)
+            if steam_calls(browser):
+                failed.append("steam calls")
             # no choice on the device: Steam's language, even from an English browser; then a device set to English
             for locale, choice, lang in (("en-US", None, "ru"), ("ru-RU", "en", "en")):
                 ctx = browser.new_context(locale=locale, viewport={"width": 390, "height": 844})
@@ -83,6 +147,16 @@ def main():
                 page.click(".gcard")
                 page.wait_for_timeout(1000)
                 seen.append(page.inner_text("body"))
+                # the game's layout: save it to DeckDrop, then it is listed in Settings
+                page.click("[data-lysave]")
+                page.fill("#mf0", f"Layout {lang}")
+                page.click("#mok")
+                page.wait_for_selector(".toast.ok", timeout=10000)
+                seen.append(page.inner_text("#toasts"))
+                page.click("#tabSettings")
+                page.wait_for_selector(f"#lyList >> text=Layout {lang}", timeout=10000)
+                seen.append(page.inner_text("#sLayouts"))
+                page.click("#tabGames")
                 page.click("#gpBack")
                 page.click("#importGame")
                 page.wait_for_timeout(500)

@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from .paths import dir_size, split_ext
 from .state import STATE, STATE_LOCK, save_state, update_added
 from .steam.cdp import CDP
 from .steam.compat import compat_for, compat_label, compat_mapping
+from .steam.layouts import apply_default, default_layout
 from .steam.library import shortcuts_index
 from .steam.session import session_env
 from .steam.shortcuts import queue_pending
@@ -45,6 +47,8 @@ def add_to_steam(game_dir, exe, name=None, tool=None):
             CDP.set_compat(appid, tool)
         update_added(str(p), appid=appid, name=name, compat=tool, via="cdp", art=False)
         threading.Thread(target=carry(art_worker), args=(str(p), False, False), daemon=True).start()
+        if default_layout():
+            threading.Thread(target=carry(_layout_for_new), args=(str(p), appid), daemon=True).start()
         return tr("addsteam.done", name=name) + ", " + (compat_label(tool) if tool else tr("addsteam.native"))
     # fallback: steamos-add-to-steam names the shortcut after the file; fix it up later via CEF
     env, running = session_env()
@@ -66,8 +70,18 @@ def add_to_steam(game_dir, exe, name=None, tool=None):
     queue_pending(op="rename", exe=str(p), name=name)
     if tool:
         queue_pending(op="compat", exe=str(p), tool=tool)
+    if default_layout():
+        queue_pending(op="layout", exe=str(p))
     threading.Thread(target=carry(art_worker), args=(str(p), False, True), daemon=True).start()
     return tr("addsteam.queued", name=name)
+
+
+def _layout_for_new(exe, appid):
+    """The default controller layout for a game just added; Steam may need a moment for a new shortcut."""
+    for delay in (1, 4):
+        time.sleep(delay)
+        if apply_default(exe, appid):
+            return
 
 
 def game_dirs():
@@ -119,6 +133,7 @@ def list_games():
                              "art": bool(rec.get("art")), "art_error": rec.get("art_error"),
                              "art_source": rec.get("art_source"), "vndb_title": rec.get("vndb_title"),
                              "art_note": rec.get("art_note"),
+                             "layout": rec.get("layout"), "layout_error": rec.get("layout_error"),
                              "compat": compat_info[0], "compat_from": compat_info[1],
                              "pending": full in pending_exes,
                              "appid": appid})

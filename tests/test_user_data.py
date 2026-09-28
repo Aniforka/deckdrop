@@ -11,7 +11,8 @@ are none) this runs what a user does:
 2. the user presses "update" (POST /api/update of the old version) pointing at the new build;
 3. checks: the update touched no file but the program and its .bak; the new version,
    started on the same home, shows the same settings and games, accepts the old PIN and
-   media password, and after it writes state.json every stored key keeps its value.
+   media password, and after it writes state.json every stored key keeps its value; the
+   controller layouts saved in DeckDrop are listed again, byte for byte, and offered to Steam.
 
 CI runs this as its own required step, before every release too.
 
@@ -53,6 +54,19 @@ SETTINGS = {         # every setting away from its default
     "mega_verify": False,
     "cef_enabled": False,
 }
+
+
+LAYOUT_ID = "0a1b2c3d"
+LAYOUT = """"controller_mappings"
+{
+\t"title"\t\t"NAME"
+\t"controller_type"\t\t"controller_neptune"
+\t"group"
+\t{
+\t\t"id"\t\t"0"
+\t}
+}
+"""
 
 
 def version_key(v):
@@ -207,7 +221,18 @@ class UserDataSurvivesUpdate(unittest.TestCase):
         # the service has no DECKDROP_* overrides: everything lives at the default paths in HOME
         env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
         env.update(HOME=str(home), DECKDROP_NO_RESTART="1", DECKDROP_CEF="0",
-                   DECKDROP_STEAM=str(home / "no-steam"))
+                   DECKDROP_STEAM=str(home / "Steam"))
+        templates = home / "Steam" / "controller_base" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "controller_neptune_wasd.vdf").write_text(LAYOUT.replace("NAME", "#Title"), "utf-8")
+        # controller layouts saved in DeckDrop, the files the layouts page keeps
+        layouts = home / ".config" / "deckdrop" / "layouts"
+        layouts.mkdir(parents=True)
+        (layouts / f"{LAYOUT_ID}.vdf").write_text(LAYOUT.replace("NAME", "#Title"), "utf-8")
+        (layouts / f"{LAYOUT_ID}.json").write_text(json.dumps(
+            {"name": "Для новелл", "game": "Моя игра", "source": "1/x/controller_neptune.vdf", "created": 1700000000},
+            ensure_ascii=False), "utf-8")
+        kept_layouts = snapshot(layouts, program)
 
         # 1. the user sets up the old version through its web page
         old = Running(program, dict(env, DECKDROP_PIN=FIRST_PIN))
@@ -275,8 +300,15 @@ class UserDataSurvivesUpdate(unittest.TestCase):
             spare.mkdir()
             (spare / "g.exe").write_bytes(b"MZ")
             new.post_ok("/api/game/import", {"path": str(spare)})
+            status, ly = new.get("/api/layouts")
+            self.assertEqual(status, 200, f"{label}: layouts page")
+            self.assertEqual([(x["id"], x["name"], x["template"]) for x in ly["layouts"]],
+                             [(LAYOUT_ID, "Для новелл", True)], f"{label}: saved layout lost")
         finally:
             new.stop()
+        self.assertEqual(snapshot(layouts, program), kept_layouts, f"{label}: saved layouts rewritten")
+        self.assertIn('"DeckDrop: Для новелл"',
+                      (templates / f"controller_neptune_deckdrop_{LAYOUT_ID}.vdf").read_text("utf-8"))
 
         saved = json.loads(state_file.read_text("utf-8"))
         want = dict(stored, vndb_auto=True)

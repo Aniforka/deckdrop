@@ -2,6 +2,7 @@
 
     python -m unittest discover -s tests
 """
+import http.server
 import json
 import os
 import sys
@@ -22,11 +23,52 @@ UNITS = {"text", "bytes", "mbps", "ms", "pct", "duration", "watts"}
 SECTIONS = 5
 
 
+class UpdateServer(http.server.ThreadingHTTPServer):
+    """Stands in for the update link: tests never knock on the GitHub release (that counts as a download)."""
+
+    def __init__(self):
+        self.seen = []
+        seen = self.seen
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                seen.append((self.command, self.path))
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_HEAD
+
+            def log_message(self, *args):
+                pass
+        super().__init__(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server_address[1]}/deckdrop.py"
+
+
+class UpdateProbeTest(unittest.TestCase):
+    def test_a_github_release_file_is_never_touched(self):
+        from deckdrop.diagnostics import update_probe
+        for url in ("https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py",
+                    "https://github.com/Aniforka/deckdrop/releases/download/v0.4.2/deckdrop.py",
+                    "https://GitHub.com/someone/fork/releases/latest/download/deckdrop.py"):
+            probe = update_probe(url)
+            self.assertNotIn("download", probe, url)
+            self.assertTrue(probe.lower().endswith("/releases/latest"), probe)
+        self.assertEqual(update_probe("https://github.com/Aniforka/deckdrop/releases/latest/download/deckdrop.py"),
+                         "https://github.com/Aniforka/deckdrop/releases/latest")
+
+    def test_other_links_are_checked_as_they_are(self):
+        from deckdrop.diagnostics import update_probe
+        for url in ("http://192.168.1.10:8000/deckdrop.py", "https://example.org/deckdrop.py"):
+            self.assertEqual(update_probe(url), url)
+
+
 class DiagnosticsTest(unittest.TestCase):
     """A running DeckDrop with a few planted problems."""
 
     @classmethod
     def setUpClass(cls):
+        cls.updates = UpdateServer()
         cls.home = Path(tempfile.mkdtemp())
         games = cls.home / "Games"
         (games / "Cool Game").mkdir(parents=True)
@@ -42,13 +84,14 @@ class DiagnosticsTest(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
         env.update(HOME=str(cls.home), USERPROFILE=str(cls.home), DECKDROP_CEF="0",
                    DECKDROP_STATE=str(cls.home / "state.json"), DECKDROP_GAMES=str(games),
-                   DECKDROP_STEAM=str(cls.home / "no-steam"))
+                   DECKDROP_STEAM=str(cls.home / "no-steam"), DECKDROP_UPDATE_URL=cls.updates.url)
         cls.games = games
         cls.app = Running(ROOT / "tools" / "dev.py", env)
 
     @classmethod
     def tearDownClass(cls):
         cls.app.stop()
+        cls.updates.shutdown()
 
     def check(self):
         return self.app.post_ok("/api/perf/check", {})
@@ -77,6 +120,11 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(pending["status"], "warn")
         self.assertIn("boom", pending["detail"])
         self.assertEqual(self.by_title(res, "Steam")["status"], "warn")          # no Steam folder here
+
+    def test_update_link_is_checked_without_downloading(self):
+        before = len(self.updates.seen)
+        self.assertEqual(self.by_title(self.check(), "Update")["status"], "ok")
+        self.assertEqual(self.updates.seen[before:], [("HEAD", "/deckdrop.py")])
 
     def test_self_check_healthy_parts(self):
         res = self.check()
