@@ -53,6 +53,10 @@ developer mode, and SteamOS updates do not break it.
 <td align="center" valign="top" width="50%"><img src="docs/media/en/media.png" width="280" alt="Gallery"><br><sub>Screenshot gallery</sub></td>
 <td align="center" valign="top" width="50%"><img src="docs/media/en/settings.png" width="280" alt="Settings"><br><sub>Settings and language</sub></td>
 </tr>
+<tr>
+<td align="center" valign="top" width="50%"><img src="docs/media/en/layouts.png" width="280" alt="Controller layouts on the game page"><br><sub>Controller layouts: save and apply</sub></td>
+<td align="center" valign="top" width="50%"><img src="docs/media/en/layouts-settings.png" width="280" alt="Saved controller layouts in Settings"><br><sub>Saved layouts and the one for new games</sub></td>
+</tr>
 </table>
 
 <p align="center"><img src="docs/media/en/desktop.png" width="760" alt="DeckDrop in a desktop browser"></p>
@@ -278,13 +282,13 @@ Steam keeps its settings in memory and rewrites its files on exit, so edits to `
 `shortcuts.vdf` made while it runs are lost. DeckDrop does what Decky Loader does: it turns on
 Steam's local CEF debugging port (the `.cef-enable-remote-debugging` marker file in the Steam
 folder) and asks the running client to add a shortcut with the right name, set Proton, apply
-artwork or remove the shortcut.
+artwork, select a [controller layout](#controller-layouts) or remove the shortcut.
 
 - The port listens on the Deck only (localhost); it is not reachable from outside.
 - It becomes active after **one Deck reboot**. The status is shown at the bottom of the page
   and in Settings.
-- Until then, games are added with `steamos-add-to-steam`, and the name and Proton are queued
-  and applied automatically once control is available.
+- Until then, games are added with `steamos-add-to-steam`, and the name, Proton and the layout
+  for new games are queued and applied automatically once control is available.
 - Turning it off in Settings removes the marker; Steam closes the port on its next start.
 
 ## Passwords and PIN
@@ -501,7 +505,7 @@ Settings has a proxy used **by DeckDrop only**; the rest of the Deck goes online
 
 Open them with the tab or the ⚙ in the header; every switch saves immediately. They cover the
 interface language, the default Proton for new games, preferring Linux builds, Steam control,
-automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, the Mega
+saved [controller layouts](#controller-layouts) and the layout for new games, automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, the Mega
 checksum check, archive passwords, the update link, changing the PIN, and disk and address
 details.
 
