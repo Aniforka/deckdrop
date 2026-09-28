@@ -44,8 +44,8 @@ from ..state import (
 from ..steam.cdp import CDP
 from ..steam.compat import compat_tools
 from ..steam.layouts import (
-    delete_layout, export_layout, game_sources, list_layouts, rename_layout, save_from_game,
-    save_upload, sync_templates, templates_dir,
+    apply_layout, delete_layout, export_layout, game_sources, list_layouts, rename_layout,
+    save_from_game, save_upload, shortcut_of, steam_current, sync_templates, templates_dir,
 )
 from ..steam.shortcuts import rename_shortcut, set_compat_for
 from ..storage import disks, root_for
@@ -257,7 +257,10 @@ class Handler(BaseHTTPRequestHandler):
                 sync_templates()
                 self.send_json({"layouts": list_layouts(), "templates": templates_dir() is not None})
             elif path == "/api/layouts/sources":
-                self.send_json({"sources": game_sources(self.q1(q, "game"), self.q1(q, "exe"))})
+                game, exe = self.q1(q, "game"), self.q1(q, "exe")
+                current = steam_current(shortcut_of(game, exe)[1])
+                self.send_json({"sources": game_sources(game, exe, current), "current": current,
+                                "layouts": list_layouts(), "cdp": CDP.available()})
             elif path == "/api/layouts/file":
                 name, data = export_layout(self.q1(q, "id"))
                 self._send(200, data, "text/plain; charset=utf-8", {
@@ -369,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "removed": removed, "notes": notes})
             elif path == "/api/layouts/save":
                 self.send_json({"ok": True, **save_from_game(s("game"), s("exe"), s("src"), s("name"))})
+            elif path == "/api/layouts/apply":
+                self.send_json({"ok": True, "note": apply_layout(s("game"), s("exe"), s("id"))})
             elif path == "/api/layouts/rename":
                 self.send_json({"ok": True, **rename_layout(s("id"), s("name"))})
             elif path == "/api/layouts/delete":

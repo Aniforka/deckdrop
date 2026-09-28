@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -21,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fake_cdp import FakeSteam  # noqa: E402
 from test_user_data import Running  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,12 +55,16 @@ def layout(title, controller="controller_neptune", extra=""):
 '''
 
 
-def shortcuts_vdf(name, exe, appid):
-    """A binary shortcuts.vdf with one non-Steam game."""
+def shortcut_entry(i, name, exe, appid):
     def s(key, val):
         return b"\x01" + key.encode() + b"\0" + val.encode() + b"\0"
-    entry = b"\x000\0" + b"\x02appid\0" + appid.to_bytes(4, "little") + s("appname", name) + s("exe", f'"{exe}"') + b"\x08"
-    return b"\x00shortcuts\0" + entry + b"\x08\x08"
+    return (b"\x00" + str(i).encode() + b"\0" + b"\x02appid\0" + appid.to_bytes(4, "little")
+            + s("appname", name) + s("exe", f'"{exe}"') + b"\x08")
+
+
+def shortcuts_vdf(name, exe, appid):
+    """A binary shortcuts.vdf with one non-Steam game."""
+    return b"\x00shortcuts\0" + shortcut_entry(0, name, exe, appid) + b"\x08\x08"
 
 
 def snapshot(root):
@@ -239,6 +245,14 @@ class LayoutsTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(diff(before, snapshot(self.home)), {"added": [], "removed": [], "changed": []})
 
+    def test_apply_needs_steam_control(self):
+        _, a = self.save(self.src(), "A")
+        before = snapshot(self.home)
+        status, res = self.app.call("/api/layouts/apply", {"game": str(self.game), "exe": "Yosuga.exe", "id": a["id"]})
+        self.assertEqual(status, 400, res)
+        self.assertIn("Steam", res["error"])
+        self.assertEqual(diff(before, snapshot(self.home)), {"added": [], "removed": [], "changed": []})
+
     # ---- Steam's templates follow DeckDrop
     def test_templates_come_back_and_strays_go(self):
         _, a = self.save(self.src(), "A")
@@ -281,6 +295,124 @@ class LayoutsTest(unittest.TestCase):
             status, _ = self.put("/api/layouts/upload?name=x", body)
             self.assertEqual(status, 400)
         self.assertEqual(diff(before, snapshot(self.home)), {"added": [], "removed": [], "changed": []})
+
+
+class ApplyTest(unittest.TestCase):
+    """Applying a saved layout asks the running Steam; DeckDrop itself writes nothing into Steam's files."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.home = h = Path(tempfile.mkdtemp())
+        cls.steam = h / "Steam"
+        cls.cfg = cls.steam / "steamapps/common/Steam Controller Configs" / ACCOUNT / "config"
+        games = {"Yosuga": ("Yosuga.exe", "Yosuga no Sora", APPID), "Mystery": ("run.exe", "Mystery Game", 2600000001)}
+        entries = b""
+        for i, (folder, (exe, name, appid)) in enumerate(games.items()):
+            (h / "Games" / folder).mkdir(parents=True)
+            (h / "Games" / folder / exe).write_bytes(b"MZ" + b"\0" * 64)
+            entries += shortcut_entry(i, name, h / "Games" / folder / exe, appid)
+        (h / "Games" / "Newcomer").mkdir()
+        (h / "Games" / "Newcomer" / "new.exe").write_bytes(b"MZ" + b"\0" * 64)
+        (cls.cfg / "yosugaexe").mkdir(parents=True)
+        (cls.cfg / "yosugaexe" / "FYZZ53700874.vdf").write_text(layout("#Title"), "utf-8")
+        # a folder no name leads to: only Steam's own answer finds it
+        (cls.cfg / "odd name").mkdir()
+        (cls.cfg / "odd name" / "controller_neptune.vdf").write_text(layout("Odd"), "utf-8")
+        (cls.steam / "controller_base" / "templates").mkdir(parents=True)
+        (cls.steam / "userdata" / ACCOUNT / "config").mkdir(parents=True)
+        (cls.steam / "userdata" / ACCOUNT / "config" / "shortcuts.vdf").write_bytes(b"\x00shortcuts\0" + entries + b"\x08\x08")
+        cls.fake = FakeSteam()
+        cls.fake.current[2600000001] = ("autosave://" + str(cls.cfg / "odd name" / "controller_neptune.vdf"), "Odd")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
+        env.update(HOME=str(h), DECKDROP_CEF="1", DECKDROP_CEF_PORT=str(cls.fake.port), DECKDROP_PIN="1234",
+                   DECKDROP_STEAM=str(cls.steam), DECKDROP_GAMES=str(h / "Games"))
+        cls.app = Running(ROOT / "tools" / "dev.py", env)
+        cls.app.post_ok("/api/settings", {"vndb_auto": False})
+        req = urllib.request.Request(f"http://127.0.0.1:{cls.app.port}/api/layouts/upload?name=VN",
+                                     data=layout("VN").encode(), method="PUT")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            cls.lid = json.loads(r.read())["id"]
+        cls.url = f"template://controller_neptune_deckdrop_{cls.lid}.vdf"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.stop()
+        cls.fake.close()
+        shutil.rmtree(cls.home, ignore_errors=True)
+
+    def setUp(self):
+        self.fake.mode = "ok"
+        self.fake.calls.clear()
+
+    def apply(self, folder, exe, lid=None):
+        return self.app.call("/api/layouts/apply", {"game": str(self.home / "Games" / folder), "exe": exe,
+                                                    "id": self.lid if lid is None else lid})
+
+    def exe_of(self, folder):
+        _, st = self.app.get("/api/state")
+        return next(g for g in st["games"] if g["name"] == folder)["exes"][0]
+
+    def test_apply_asks_steam_and_writes_nothing_into_steam(self):
+        before = snapshot(self.steam)
+        status, res = self.apply("Yosuga", "Yosuga.exe")
+        self.assertEqual(status, 200, res)
+        self.assertIn("VN", res["note"])
+        self.assertEqual(self.fake.calls_of("apply"), [("apply", APPID, self.url)])
+        self.assertEqual(snapshot(self.steam), before, "Steam records the choice itself")
+        self.assertEqual(self.exe_of("Yosuga")["layout"], "VN")
+
+    def test_steam_that_does_not_switch_is_reported(self):
+        for mode, words in (("stuck", "did not switch"), ("no_controller", "controls")):
+            self.fake.mode = mode
+            status, res = self.apply("Yosuga", "Yosuga.exe")
+            self.assertEqual(status, 400, res)
+            self.assertIn(words, res["error"])
+
+    def test_apply_refuses_unknown_layouts_and_games(self):
+        for lid in ("deadbeef", "../x", ""):
+            status, _ = self.apply("Yosuga", "Yosuga.exe", lid)
+            self.assertEqual(status, 400, lid)
+        status, _ = self.apply("Newcomer", "new.exe")                    # not in Steam yet
+        self.assertEqual(status, 400)
+        self.assertEqual(self.fake.calls_of("apply"), [])
+
+    def test_sources_follow_steams_own_answer(self):
+        q = f"game={urllib.parse.quote(str(self.home / 'Games' / 'Mystery'))}&exe=run.exe"
+        status, res = self.app.get("/api/layouts/sources?" + q)
+        self.assertEqual(status, 200, res)
+        self.assertEqual(res["current"]["title"], "Odd")
+        self.assertEqual([s["src"] for s in res["sources"]], [f"{ACCOUNT}/odd name/controller_neptune.vdf"])
+        self.assertTrue(res["cdp"])
+
+    def test_steams_answer_outside_its_configs_is_ignored(self):
+        self.fake.current[2600000001] = ("autosave:///etc/passwd", "x")
+        try:
+            q = f"game={urllib.parse.quote(str(self.home / 'Games' / 'Mystery'))}&exe=run.exe"
+            _, res = self.app.get("/api/layouts/sources?" + q)
+            self.assertEqual(res["sources"], [])
+        finally:
+            self.fake.current[2600000001] = ("autosave://" + str(self.cfg / "odd name" / "controller_neptune.vdf"), "Odd")
+
+    def test_default_layout_for_new_games(self):
+        self.app.post_ok("/api/settings", {"default_layout": self.lid})
+        try:
+            self.app.post_ok("/api/add_to_steam", {"game": str(self.home / "Games" / "Newcomer"), "exe": "new.exe"})
+            for _ in range(40):
+                if self.fake.calls_of("apply"):
+                    break
+                time.sleep(0.25)
+            self.assertEqual(self.fake.calls_of("apply"), [("apply", 3000000077, self.url)])
+            for _ in range(20):
+                if self.exe_of("Newcomer").get("layout"):
+                    break
+                time.sleep(0.25)
+            self.assertEqual(self.exe_of("Newcomer")["layout"], "VN")
+        finally:
+            self.app.post_ok("/api/settings", {"default_layout": ""})
+
+    def test_no_default_layout_by_default(self):
+        _, st = self.app.get("/api/state")
+        self.assertEqual(st["settings"]["default_layout"], "")
 
 
 class NoSteamTemplatesTest(unittest.TestCase):

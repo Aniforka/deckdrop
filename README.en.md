@@ -33,7 +33,8 @@ same Wi-Fi, and from the couch you can:
 - **drop a patch** straight into the game folder, or unpack a patch archive over the game after
   seeing exactly what it will replace;
 - **back up saves** to a zip and restore them;
-- **share controller layouts between games**: save a game's layout and pick it in any other;
+- **share controller layouts between games**: save a game's layout and apply it to any other,
+  or give every new game your layout;
 - **browse Steam screenshots and recordings** in a password-protected gallery and save them
   to your phone;
 - do all of this **in English or Russian**: the language follows Steam on the Deck.
@@ -399,9 +400,18 @@ Steam keeps a layout with the game it was made for: a layout saved in one game i
 in another. DeckDrop carries it over.
 
 1. On the game page, the "Controller layouts" card lists the layouts Steam has for this game:
-   the current one and the ones saved under a name. "Save to DeckDrop" asks for a name.
-2. On the Deck, in any game: controller settings → Templates → "DeckDrop: name". If it is not
-   there, restart Steam.
+   its own one and the ones saved under a name. "Save to DeckDrop" asks for a name.
+2. To use it in a game: "Layout from DeckDrop" → "Apply" on that game's page (needs
+   [Steam control](#steam-control)), or on the Deck: controller settings → Templates →
+   "DeckDrop: name". If it is not there, restart Steam.
+
+"Now in Steam" shows the game's current layout. Applying selects the saved layout the way Steam's
+own picker does and checks that Steam reports it; the game's previous layout stays in Steam and
+can be picked again there.
+
+**Layout for new games** (Settings → Controller layouts): one of the saved layouts, applied when
+DeckDrop adds a game to Steam; "—" by default, Steam picks as usual. Without Steam control it is
+applied once control is on, like a pending name or Proton.
 
 Settings → Controller layouts lists the saved layouts: rename, download as `.vdf`, delete, or
 upload a `.vdf`, for example one downloaded from another Deck. Deleting removes the layout from
@@ -411,7 +421,8 @@ copies a template into the game when you pick it.
 DeckDrop keeps its copies in `~/.config/deckdrop/layouts` and puts each one into Steam's
 templates folder (`~/.local/share/Steam/controller_base/templates`) as
 `controller_neptune_deckdrop_<id>.vdf`. It never changes a game's own layouts or Valve's
-templates. A Steam update may clear that folder: DeckDrop puts its templates back when it
+templates, and applying a layout is asked of Steam, which records the choice itself.
+A Steam update may clear that folder: DeckDrop puts its templates back when it
 starts and whenever the list is opened.
 
 Only layouts of the Deck's own controls can be saved. A layout made for a game with its own

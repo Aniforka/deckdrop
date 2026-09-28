@@ -144,7 +144,8 @@ function renderGame(s){const g=(s.games||[]).find(x=>x.path===view.path);
  const info=[t('info.folder_html',{name:esc(g.name)}),t('info.disk',{disk:esc(g.disk)})];
  if(gameInfo&&gameInfo.path===g.path)info.push(t('info.size',{size:fmt(gameInfo.size),n:gameInfo.files}));
  if(ch&&ch.in_steam){info.push(t('info.steam_name',{name:esc(ch.name)}));if(ch.appid)info.push(`Steam AppID: <code>${ch.appid}</code>`);if(!ch.linux)info.push(`Proton: ${esc(compatLabel(ch.compat))}${ch.compat_from==='steam'?' · '+t('info.from_steam_settings'):''}`);
-  if(ch.art_source)info.push(t('info.art',{source:ch.art_source==='vndb'?'VNDB · '+esc(ch.vndb_title||''):ch.art_source==='custom'?t('art.src.custom'):ch.art_source==='steam'?t('art.src.steam'):t('art.src.icon')}));if(ch.art_note)info.push(esc(ch.art_note));if(ch.art_error)info.push(`<span class="err">${esc(ch.art_error)}</span>`);if(ch.pending)info.push(`<span class="busy">${t('info.pending')}</span>`);}
+  if(ch.art_source)info.push(t('info.art',{source:ch.art_source==='vndb'?'VNDB · '+esc(ch.vndb_title||''):ch.art_source==='custom'?t('art.src.custom'):ch.art_source==='steam'?t('art.src.steam'):t('art.src.icon')}));if(ch.art_note)info.push(esc(ch.art_note));if(ch.art_error)info.push(`<span class="err">${esc(ch.art_error)}</span>`);if(ch.pending)info.push(`<span class="busy">${t('info.pending')}</span>`);
+  if(ch.layout)info.push(t('info.layout',{name:esc(ch.layout)}));if(ch.layout_error)info.push(`<span class="err">${t('info.layout_error',{error:esc(ch.layout_error)})}</span>`);}
  $('#gpInfo').innerHTML=info.join('<br>');}
 function render(s){if(!s)return;
  $('#ver').textContent='v'+s.version;
@@ -263,13 +264,19 @@ async function loadSaves(g,x){const q=`game=${encodeURIComponent(g.path)}&exe=${
 function lyRow(name,sub,acts){return `<div class="arch"><div class="nm"><b>${esc(name)}</b><div class="path">${sub.filter(Boolean).map(esc).join(' · ')}</div></div><span class="acts">${acts}</span></div>`;}
 async function loadLayoutSources(g,x){const q=`game=${encodeURIComponent(g.path)}&exe=${encodeURIComponent(x.exe)}`;$('#gpLayouts').textContent=t('common.looking');
  try{const j=await(await fetch('/api/layouts/sources?'+q)).json();if(j.error){$('#gpLayouts').innerHTML=`<span class="err">${esc(j.error)}</span>`;return;}
-  $('#gpLayouts').innerHTML=j.sources.map((s,i)=>lyRow(s.kind==='current'?t('layouts.current'):s.title,[s.kind==='current'?(s.base&&t('layouts.based_on',{name:s.base})):t('layouts.saved_in_steam'),when(s.mtime)],
-   `<button class="ghost sm" data-lysave="${i}">${t('layouts.save')}</button>`)).join('')||`<div class="hint">${t('layouts.none')}</div>`;
+  const ls=j.layouts||[];
+  const apply=!ls.length?'':j.cdp?`<div class="frow"><label for="lyPick">${t('layouts.apply_label')}</label><div class="row"><select id="lyPick">${ls.map(l=>`<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select><button class="sm" id="lyApply">${t('layouts.apply')}</button></div></div>`
+   :`<div class="hint" style="margin-top:10px">${t('layouts.apply_needs_cdp')}</div>`;
+  $('#gpLayouts').innerHTML=(j.current&&j.current.title?`<div class="hint" style="margin:8px 0">${t('layouts.now_in_steam_html',{name:esc(j.current.title)})}</div>`:'')+j.sources.map((s,i)=>lyRow(s.kind==='current'?t('layouts.current'):s.title,[s.kind==='current'?(s.base&&t('layouts.based_on',{name:s.base})):t('layouts.saved_in_steam'),when(s.mtime)],
+   `<button class="ghost sm" data-lysave="${i}">${t('layouts.save')}</button>`)).join('')+(j.sources.length?'':`<div class="hint">${t('layouts.none')}</div>`)+apply;
+  if($('#lyApply'))$('#lyApply').onclick=async()=>{const b=$('#lyApply');b.disabled=true;b.textContent=t('layouts.applying');
+   const res=await api('/api/layouts/apply',{game:g.path,exe:x.exe,id:$('#lyPick').value});if(res.ok)toast(res.note,'ok');loadLayoutSources(g,x);};
   $('#gpLayouts').querySelectorAll('[data-lysave]').forEach(bt=>bt.onclick=async()=>{const s=j.sources[+bt.dataset.lysave];
    const r=await ask({title:t('layouts.save_title'),fields:[{label:t('layouts.name'),value:s.kind==='current'?(x.clean_name||g.title||g.name):s.title}],ok:t('btn.save')});if(!r)return;
    const res=await api('/api/layouts/save',{game:g.path,exe:x.exe,src:s.src,name:r[0]});if(res.ok)toast(res.template?t('layouts.saved',{name:res.name}):t('layouts.saved_no_steam'),'ok');});
  }catch(e){$('#gpLayouts').textContent=t('status.error');}}
 async function loadLayouts(){try{const j=await(await fetch('/api/layouts')).json();const ls=j.layouts||[];$('#lyWarn').hidden=j.templates!==false;
+ const def=((lastState||{}).settings||{}).default_layout||'';if(document.activeElement!==$('#sDefLayout'))$('#sDefLayout').innerHTML=`<option value="">${t('layouts.for_new_none')}</option>`+ls.map(l=>`<option value="${esc(l.id)}" ${l.id===def?'selected':''}>${esc(l.name)}</option>`).join('');
  $('#lyList').innerHTML=ls.map(l=>lyRow(l.name,[l.game?t('layouts.from_game',{game:l.game}):t('layouts.from_file'),when(l.created),j.templates&&!l.template&&t('layouts.not_in_steam')],
   `<button class="ghost sm" data-lyren="${esc(l.id)}" title="${t('layouts.rename')}" aria-label="${t('layouts.rename')}">✎</button><a href="/api/layouts/file?id=${esc(l.id)}" download><button class="ghost sm" title="${t('layouts.download')}" aria-label="${t('layouts.download')}">⤓</button></a><button class="danger sm" data-lydel="${esc(l.id)}">${t('layouts.delete')}</button>`)).join('')||`<div class="empty">${t('layouts.empty')}</div>`;
  const byId=id=>ls.find(l=>l.id===id);

@@ -9,6 +9,7 @@ from ..i18n import tr
 from ..state import STATE, STATE_LOCK, added_rec, save_state, update_added
 from ..steam.cdp import CDP
 from ..steam.compat import compat_label
+from ..steam.layouts import apply_default
 from ..steam.library import shortcuts_index
 
 
@@ -78,6 +79,8 @@ def drain_pending():
                 CDP.set_name(appid, op["name"])
             elif op["op"] == "compat":
                 CDP.set_compat(appid, op.get("tool") or "")
+            elif op["op"] == "layout":
+                apply_default(op["exe"], appid)      # records how it went; a deleted layout is skipped
             done += 1
             log(f"pending {op['op']} applied for {Path(op['exe']).name}")
         except Exception as e:  # noqa: BLE001

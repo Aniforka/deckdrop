@@ -14,6 +14,10 @@ takes its description from its section, so a version cannot be released without 
 - **Controller layouts shared between games.** Steam offers a layout only in the game it was
   made for. Now the game page lists the game's layouts in Steam, and "Save to DeckDrop" makes
   one available to every game on the Deck: controller settings → Templates → "DeckDrop: name".
+- **Apply a saved layout from the phone**: "Layout from DeckDrop" → "Apply" on the game page
+  (with Steam control). DeckDrop checks that Steam took it; the game's previous layout stays in
+  Steam. The page also shows the game's current layout.
+- **Layout for new games** in Settings: applied when DeckDrop adds a game to Steam; "—" by default.
 - **Settings → Controller layouts**: rename, delete, download as `.vdf`, or upload a `.vdf`,
   for example one from another Deck.
 - Saving, renaming and deleting change only DeckDrop's own layout files: never a game's layouts,
@@ -27,6 +31,11 @@ takes its description from its section, so a version cannot be released without 
   для которой её сделали. Теперь на странице игры видны её раскладки в Steam, а «Сохранить
   в DeckDrop» делает раскладку доступной в любой игре на деке: настройки контроллера →
   Шаблоны → «DeckDrop: название».
+- **Применить сохранённую раскладку с телефона**: на странице игры «Раскладка из DeckDrop» →
+  «Применить» (при управлении Steam). DeckDrop проверяет, что Steam её поставил; прежняя раскладка
+  игры остаётся в Steam. Там же видно, какая раскладка у игры сейчас.
+- **Раскладка для новых игр** в настройках: ставится, когда DeckDrop добавляет игру в Steam;
+  по умолчанию «—».
 - **Настройки → Раскладки контроллера**: переименовать, удалить, скачать `.vdf` или загрузить
   `.vdf`, например с другого дека.
 - Сохранение, переименование и удаление меняют только собственные файлы раскладок DeckDrop:
