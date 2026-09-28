@@ -4,14 +4,15 @@
 Run it on the Deck (desktop or over SSH) and send back the report it writes:
 
     python3 layouts_probe.py                    look around, change nothing
-    python3 layouts_probe.py --template GAME    also copy GAME's layout into Steam's templates
-    python3 layouts_probe.py --cleanup          remove that copy again
+    python3 layouts_probe.py --copy FROM TO     also copy a layout of game FROM to game TO
+    python3 layouts_probe.py --cleanup          remove those copies again
 
-GAME is a folder name from the "Steam Controller Configs" list of the report (an AppID or the
-name of a non-Steam game). The report goes to ~/deckdrop-layouts-probe.txt and to the screen,
+FROM and TO are folder names from the "Steam Controller Configs" list of the report (an AppID
+or the name of a non-Steam game). --copy puts FROM's layout, titled "DeckDrop probe", both
+among Steam's templates and among TO's own saved layouts, and asks Steam what it sees for TO. The report goes to ~/deckdrop-layouts-probe.txt and to the screen,
 and then it is shared on the home network until Ctrl+C: the script prints a link to open on a
 phone or PC (only the report is served, nothing else). --no-serve skips that.
-Only --template and --cleanup write anything, and only the one probe file in the templates folder.
+Only --copy and --cleanup write anything: the probe files, nothing else.
 """
 import argparse
 import datetime
@@ -29,6 +30,7 @@ LIMIT = 60                 # entries per listing
 TEXT_LIMIT = 20000         # characters of a file printed as is
 PROBE_TEMPLATE = "controller_neptune_deckdrop_probe.vdf"
 PROBE_TITLE = "DeckDrop probe"
+PROBE_PERSONAL = "deckdrop probe_0.vdf"
 TOKEN = re.compile(r'\s*(?://[^\n]*\n\s*)*("(?:\\.|[^"\\])*"|\{|\}|[^\s{}"]+)', re.S)
 
 out = []
@@ -135,7 +137,7 @@ def dump(p):
 def summary(p):
     """What a layout file says about itself, without printing all of it."""
     try:
-        text = p.read_text("utf-8", "replace")
+        text = p.read_text("utf-8-sig", "replace")
     except OSError as e:
         return f"(cannot read: {e})"
     m = parse_vdf(text).get("controller_mappings")
@@ -212,7 +214,7 @@ def templates(steam):
             continue
         say(f"{d}:")
         for f in sorted(d.glob("*.vdf"))[:LIMIT * 2]:
-            title = first(parse_vdf(f.read_text("utf-8", "replace")), "controller_mappings", "title")
+            title = first(parse_vdf(f.read_text("utf-8-sig", "replace")), "controller_mappings", "title")
             say(f"  {f.name}  {stamp(f)}  title={title!r}")
         probe = d / PROBE_TEMPLATE
         if probe.exists():
@@ -261,16 +263,56 @@ def cdp_eval(port, expr):
         ws.close()
 
 
-def load_ws():
-    """The WS class of the installed DeckDrop (~/deckdrop/deckdrop.py), else of this checkout."""
+def load_deckdrop():
+    """Make `import deckdrop` work: the installed single file (~/deckdrop/deckdrop.py), else this checkout."""
+    if "deckdrop" in sys.modules:
+        return
     installed = Path.home() / "deckdrop/deckdrop.py"
     if installed.is_file():
         spec = importlib.util.spec_from_file_location("deckdrop_installed", installed)
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
     else:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+
+def load_ws():
+    load_deckdrop()
     from deckdrop.steam.cdp import WS
     return WS
+
+
+def shortcuts():
+    """[(name, appid)] of the non-Steam games, read by DeckDrop's own shortcuts.vdf parser."""
+    load_deckdrop()
+    from deckdrop.steam.library import shortcuts_index
+    return sorted({(r["name"], r["appid"]) for r in shortcuts_index().values()}, key=lambda x: x[0].lower())
+
+
+def list_shortcuts(steam):
+    head("non-Steam games: name, appid and the layout folder named after them")
+    try:
+        items = shortcuts()
+    except Exception as e:  # noqa: BLE001
+        say(f"  cannot read the shortcuts: {e}")
+        return
+    folders = {p.name for p in (steam / "steamapps/common/Steam Controller Configs").glob("*/config/*") if p.is_dir()}
+    for name, appid in items:
+        guess = folder_for(name)
+        say(f"  {name!r}  appid={appid}  folder={guess!r} {'(exists)' if guess in folders else '(none)'}")
+
+
+def folder_for(name):
+    """Our guess at Steam's folder name for a shortcut: lower case, keeping letters, digits, _, spaces and !."""
+    return re.sub(r"[^\w !]", "", name.lower())
+
+
+def appid_of(steam, folder):
+    if folder.isdigit():
+        return int(folder)
+    try:
+        return next((appid for name, appid in shortcuts() if folder_for(name) == folder), None)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 API = r"""(() => {
@@ -308,29 +350,69 @@ def steam_api(port):
         say("  (DeckDrop's Steam control must be on: Settings in DeckDrop, then restart Steam)")
 
 
+CONFIG = r"""(async () => {
+  const I = SteamClient.Input, out = {}, msgs = [];
+  const wait = (p, ms) => Promise.race([Promise.resolve(p), new Promise(r => setTimeout(() => r('(no answer)'), ms))]);
+  let reg = null;
+  try { reg = I.RegisterForControllerConfigInfoMessages(m => msgs.push(m)); } catch (e) { out.register = String(e); }
+  for (const [name, args] of [['GetConfigForAppAndController', [APPID, 0]],
+                              ['QueryControllerConfigsForApp', [APPID, 0, false]]]) {
+    try { const v = await wait(I[name](...args), 4000); out[name] = v === undefined ? '(undefined)' : v; }
+    catch (e) { out[name] = 'error: ' + e; }
+  }
+  await new Promise(r => setTimeout(r, 3000));
+  out.ConfigInfoMessages = msgs;
+  try { reg && reg.unregister && reg.unregister(); } catch (e) {}
+  return JSON.parse(JSON.stringify(out, (k, v) => typeof v === 'bigint' ? String(v) : v));
+})()"""
+
+
+def steam_config(port, appid):
+    head(f"what the running Steam reports for appid {appid} (read only)")
+    try:
+        say(json.dumps(cdp_eval(port, CONFIG.replace("APPID", str(int(appid)))), indent=1, ensure_ascii=False))
+    except Exception as e:  # noqa: BLE001
+        say(f"  not available: {e}")
+
+
 def template_dir(steam):
     base = steam / "controller_base"
     return next((base / n for n in ("templates", "template") if (base / n).is_dir()), base / "templates")
 
 
-def put_template(steam, game):
-    head(f"experiment: {game}'s layout as a template")
+def game_dir(steam, game):
     configs = steam / "steamapps/common/Steam Controller Configs"
-    src = next(iter(sorted(configs.glob(f"*/config/{glob_escape(game)}/controller_neptune.vdf"))), None)
-    if src is None:
-        say(f"  no controller_neptune.vdf for {game!r}: pick a folder name from the list above")
+    return next(iter(sorted(configs.glob(f"*/config/{glob_escape(game)}"))), None)
+
+
+def retitle(text):
+    return re.subn(r'("title"\s+)"(?:\\.|[^"\\])*"', lambda m: m.group(1) + f'"{PROBE_TITLE}"', text, count=1)[0]
+
+
+def copy_layout(steam, src_game, dst_game):
+    head(f"experiment: {src_game}'s layout copied to {dst_game}")
+    src_dir, dst_dir = game_dir(steam, src_game), game_dir(steam, dst_game)
+    if src_dir is None or dst_dir is None:
+        say(f"  no folder {src_game if src_dir is None else dst_game!r}: pick folder names from the list above")
         return
-    text = src.read_text("utf-8", "replace")
-    text, n = re.subn(r'("title"\s+)"(?:\\.|[^"\\])*"', lambda m: m.group(1) + f'"{PROBE_TITLE}"', text, count=1)
-    if not n:
-        say("  the layout has no title line; copied as is")
-    dest = template_dir(steam) / PROBE_TEMPLATE
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(text, "utf-8")
-    say(f"  copied {src}")
-    say(f"      -> {dest}")
-    say(f"  Now open any OTHER game's controller settings on the Deck: is '{PROBE_TITLE}' among the templates?")
-    say("  If not, restart Steam and look again. Remove it with --cleanup.")
+    saved = sorted(p for p in src_dir.glob("*_[0-9]*.vdf"))
+    src = saved[0] if saved else src_dir / "controller_neptune.vdf"
+    if not src.is_file():
+        say(f"  {src_dir} has no layout file")
+        return
+    text = retitle(src.read_text("utf-8-sig", "replace"))
+    template = template_dir(steam) / PROBE_TEMPLATE
+    personal = dst_dir / PROBE_PERSONAL
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(text, "utf-8")
+    personal.write_text(text, "utf-8")
+    say(f"  source   {src}")
+    say(f"  template {template}")
+    say(f"  personal {personal}")
+    say(f"  On the Deck open {dst_game}'s controller settings -> Browse layouts. Is '{PROBE_TITLE}' under")
+    say("  Templates? Under Your layouts? Then open another game: is it in its Templates?")
+    say("  If you see nothing, restart Steam and look again. Remove the copies with --cleanup.")
+    return dst_dir.name
 
 
 def glob_escape(name):
@@ -339,12 +421,16 @@ def glob_escape(name):
 
 def cleanup(steam):
     head("cleanup")
-    dest = template_dir(steam) / PROBE_TEMPLATE
-    if dest.exists():
-        dest.unlink()
-        say(f"  removed {dest}")
-    else:
-        say(f"  nothing to remove at {dest}")
+    found = [template_dir(steam) / PROBE_TEMPLATE]
+    found += (steam / "steamapps/common/Steam Controller Configs").glob(f"*/config/*/{PROBE_PERSONAL}")
+    removed = 0
+    for p in found:
+        if p.exists():
+            p.unlink()
+            say(f"  removed {p}")
+            removed += 1
+    if not removed:
+        say("  no probe files left")
 
 
 def lan_ip():
@@ -393,8 +479,8 @@ def main():
     ap.add_argument("--steam", help="Steam folder (found automatically)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("DECKDROP_CEF_PORT", "8080")))
     ap.add_argument("--no-cdp", action="store_true", help="do not ask the running Steam")
-    ap.add_argument("--template", metavar="GAME", help="copy GAME's layout into Steam's templates")
-    ap.add_argument("--cleanup", action="store_true", help="remove the probe template")
+    ap.add_argument("--copy", nargs=2, metavar=("FROM", "TO"), help="copy FROM's layout to TO and to the templates")
+    ap.add_argument("--cleanup", action="store_true", help="remove the probe files")
     ap.add_argument("--report", default=str(Path.home() / "deckdrop-layouts-probe.txt"))
     ap.add_argument("--no-serve", action="store_true", help="do not share the report on the network")
     ap.add_argument("--serve-port", type=int, default=8089)
@@ -410,10 +496,16 @@ def main():
         userdata(steam)
         templates(steam)
         other_files(steam)
+        list_shortcuts(steam)
         if not args.no_cdp:
             steam_api(args.port)
-        if args.template:
-            put_template(steam, args.template)
+        if args.copy:
+            target = copy_layout(steam, *args.copy)
+            appid = target and appid_of(steam, target)
+            if appid and not args.no_cdp:
+                steam_config(args.port, appid)
+            elif target:
+                say(f"  (no appid found for {target!r}, so Steam was not asked about it)")
     Path(args.report).write_text("\n".join(out) + "\n", "utf-8")
     print(f"\nreport saved to {args.report}")
     if not args.no_serve:
