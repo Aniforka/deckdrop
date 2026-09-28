@@ -6,6 +6,33 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.5.0 — 2026-09-28
+
+### English
+
+**Added**
+- **Controller layouts shared between games.** Steam offers a layout only in the game it was
+  made for. Now the game page lists the game's layouts in Steam, and "Save to DeckDrop" makes
+  one available to every game on the Deck: controller settings → Templates → "DeckDrop: name".
+- **Settings → Controller layouts**: rename, delete, download as `.vdf`, or upload a `.vdf`,
+  for example one from another Deck.
+- Saving, renaming and deleting change only DeckDrop's own layout files: never a game's layouts,
+  Valve's templates or DeckDrop's settings. If a Steam update clears the templates, DeckDrop
+  puts its layouts back when it starts.
+
+### Русский
+
+**Добавлено**
+- **Раскладки контроллера, общие для всех игр.** Steam предлагает раскладку только в той игре,
+  для которой её сделали. Теперь на странице игры видны её раскладки в Steam, а «Сохранить
+  в DeckDrop» делает раскладку доступной в любой игре на деке: настройки контроллера →
+  Шаблоны → «DeckDrop: название».
+- **Настройки → Раскладки контроллера**: переименовать, удалить, скачать `.vdf` или загрузить
+  `.vdf`, например с другого дека.
+- Сохранение, переименование и удаление меняют только собственные файлы раскладок DeckDrop:
+  ни раскладки игр, ни шаблоны Valve, ни настройки DeckDrop не трогаются. Если обновление Steam
+  очистит шаблоны, DeckDrop вернёт свои раскладки при запуске.
+
 ## 0.4.2 — 2026-09-28
 
 ### English

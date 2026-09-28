@@ -35,7 +35,7 @@ async function api(path,body,method){const r=await fetch(path,{method:method||'P
 function showTab(name){tab=name;$('#pgGames').hidden=name!=='games';$('#pgArch').hidden=name!=='arch';$('#pgMedia').hidden=name!=='media';$('#pgSettings').hidden=name!=='settings';
  [['tabGames','games'],['tabArch','arch'],['tabMedia','media'],['tabSettings','settings']].forEach(([id,k])=>$('#'+id).classList.toggle('on',name===k));
  hdr.classList.remove('hide');window.scrollTo(0,0);
- if(name==='media')mediaEnter();if(name==='arch')loadArchives();if(name==='settings')fillSettings();clearInterval(archTimer);if(name==='arch')archTimer=setInterval(loadArchives,5000);}
+ if(name==='media')mediaEnter();if(name==='arch')loadArchives();if(name==='settings'){fillSettings();loadLayouts();}clearInterval(archTimer);if(name==='arch')archTimer=setInterval(loadArchives,5000);}
 $('#tabGames').onclick=()=>showTab('games');$('#tabArch').onclick=()=>showTab('arch');$('#tabMedia').onclick=()=>showTab('media');$('#tabSettings').onclick=()=>showTab('settings');$('#settings').onclick=()=>showTab('settings');
 // header slides away when scrolling down on a phone and comes back on scroll up
 const hdr=document.querySelector('header');let lastY=0;const mobile=matchMedia('(max-width:560px)');
@@ -131,13 +131,13 @@ function renderList(s){lastJobs=s.jobs||[];
  if(gsig!==sigGames){sigGames=gsig;const nh=s.games.filter(g=>g.hidden).length;$('#toggleHidden').textContent=showHidden?t('games.hide_hidden'):t('games.show_hidden',{n:nh});$('#toggleHidden').hidden=!nh&&!showHidden;
   $('#games').innerHTML=s.games.filter(g=>showHidden||!g.hidden).map(listCard).join('')||`<div class="empty">${t('games.empty')}</div>`;}}
 function renderGame(s){const g=(s.games||[]).find(x=>x.path===view.path);
- if(!g){$('#gpHead').innerHTML=`<div class="empty">${t('game.not_found')}</div>`;$('#gpExes').innerHTML='';$('#gpCoversCard').hidden=$('#gpSavesCard').hidden=$('#gpFilesCard').hidden=true;$('#gpActs').innerHTML='';$('#gpInfo').innerHTML='';return;}
+ if(!g){$('#gpHead').innerHTML=`<div class="empty">${t('game.not_found')}</div>`;$('#gpExes').innerHTML='';$('#gpCoversCard').hidden=$('#gpSavesCard').hidden=$('#gpFilesCard').hidden=$('#gpLayoutsCard').hidden=true;$('#gpActs').innerHTML='';$('#gpInfo').innerHTML='';return;}
  if(extrasFor!==g.path){extrasFor=g.path;loadGameExtras(g);}
  const sig=JSON.stringify([g,[...busy],s.compat_tools,gameInfo]);if(sig===sigGame||focusWithin('#gamePage')||Date.now()<holdGames)return;sigGame=sig;
  const ch=chosenExe(g);const inSteam=g.exes.some(x=>x.in_steam);
  $('#gpHead').innerHTML=`<div class="top"><div style="min-width:0"><div class="gtitle">${esc(g.title||g.name)}${inSteam?`<button class="ghost sm" data-rename="${esc(ch.exe)}" data-game="${esc(g.path)}" data-name="${esc(ch.clean_name||ch.name)}" title="${t('game.rename')}">✎</button>`:''}</div><div class="path">${esc(g.path)}</div></div><span class="acts"><span class="pill k">${esc(g.disk)}</span>${inSteam?`<span class="pill">${t('game.in_steam')}</span>`:`<span class="pill k">${t('game.not_added')}</span>`}${g.imported?`<span class="pill acc" title="${t('game.own_title')}">${t('game.own')}</span>`:''}${g.hidden?`<span class="pill warn">${t('game.hidden')}</span>`:''}</span></div>`;
  $('#gpExes').innerHTML=g.exes.map(x=>exeRow(g,x)).join('')||`<div class="empty">${t('game.no_exes')}</div>`;
- $('#gpCoversCard').hidden=!inSteam;$('#gpSavesCard').hidden=!inSteam;$('#gpFilesCard').hidden=!g.exes.length;
+ $('#gpCoversCard').hidden=!inSteam;$('#gpSavesCard').hidden=!inSteam;$('#gpLayoutsCard').hidden=!inSteam;$('#gpFilesCard').hidden=!g.exes.length;
  $('#gpActs').innerHTML=(g.hidden?`<button class="ghost sm" data-hide="${esc(g.path)}" data-hidden="0">${t('game.unhide')}</button>`:`<button class="ghost sm" data-hide="${esc(g.path)}" data-hidden="1">${t('game.hide')}</button>`)+(g.imported?`<button class="ghost sm" data-unimport="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('unimport.button')}</button>`:'')
   +`<button class="danger sm" data-del="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('game.delete')}</button>`
   +(g.imported?`<span class="hint" style="flex-basis:100%">${t('game.own_hint')}</span>`:'');
@@ -168,7 +168,7 @@ applyView(parseHash());refresh();setInterval(tick,1000);
 const LAB={portrait:[t('slot.portrait'),t('slot.portrait_size'),'2/3'],landscape:[t('slot.landscape'),'920×430','920/430'],hero:[t('slot.hero'),'1920×620','1920/620'],logo:[t('slot.logo'),t('slot.logo_size'),'16/5'],icon:[t('slot.icon'),t('slot.icon_size'),'1/1']};
 function loadGameExtras(g){gameInfo=null;const ch=chosenExe(g);if(g.exes.length)setupFiles(g);
  fetch('/api/game/info?path='+encodeURIComponent(g.path)).then(r=>r.json()).then(j=>{if(!j.error){gameInfo={path:g.path,...j};sigGame='';render(lastState);}}).catch(()=>{});
- if(ch&&ch.in_steam){loadCovers(g,ch);loadSaves(g,ch);}else{$('#gpCovers').innerHTML='';$('#gpSaves').innerHTML='';}}
+ if(ch&&ch.in_steam){loadCovers(g,ch);loadSaves(g,ch);loadLayoutSources(g,ch);}else{$('#gpCovers').innerHTML='';$('#gpSaves').innerHTML='';$('#gpLayouts').innerHTML='';}}
 // ---- files inside the game: a patch next to the exe, or anywhere below the game folder
 let filesTimer=0;
 function filesQ(g){const exe=$('#gpFExe').value||((chosenExe(g)||{}).exe)||'';return `game=${encodeURIComponent(g.path)}&exe=${encodeURIComponent(exe)}&dir=${encodeURIComponent($('#gpFDir').value.trim())}`;}
@@ -259,6 +259,29 @@ async function loadSaves(g,x){const q=`game=${encodeURIComponent(g.path)}&exe=${
  try{const j=await(await fetch('/api/saves/info?'+q)).json();if(j.error){$('#gpSaves').innerHTML=`<span class="err">${esc(j.error)}</span>`;$('#gpSvDlB').disabled=true;return;}
   $('#gpSaves').innerHTML=(j.sources.length?`${t('saves.what',{size:fmt(j.total)})}<ul class="list">${j.sources.map(s=>`<li><code>${esc(s.path)}</code> · ${t('common.files_n',{n:s.files})} · ${fmt(s.size)}</li>`).join('')}</ul>`:t('saves.none'))+(j.prefix?t('saves.prefix_html',{path:esc(j.prefix)}):'');
   $('#gpSvDlB').disabled=!j.total;}catch(e){$('#gpSaves').textContent=t('status.error');}}
+// ---- controller layouts: saved in DeckDrop, offered by Steam to every game as templates
+function lyRow(name,sub,acts){return `<div class="arch"><div class="nm"><b>${esc(name)}</b><div class="path">${sub.filter(Boolean).map(esc).join(' · ')}</div></div><span class="acts">${acts}</span></div>`;}
+async function loadLayoutSources(g,x){const q=`game=${encodeURIComponent(g.path)}&exe=${encodeURIComponent(x.exe)}`;$('#gpLayouts').textContent=t('common.looking');
+ try{const j=await(await fetch('/api/layouts/sources?'+q)).json();if(j.error){$('#gpLayouts').innerHTML=`<span class="err">${esc(j.error)}</span>`;return;}
+  $('#gpLayouts').innerHTML=j.sources.map((s,i)=>lyRow(s.kind==='current'?t('layouts.current'):s.title,[s.kind==='current'?(s.base&&t('layouts.based_on',{name:s.base})):t('layouts.saved_in_steam'),when(s.mtime)],
+   `<button class="ghost sm" data-lysave="${i}">${t('layouts.save')}</button>`)).join('')||`<div class="hint">${t('layouts.none')}</div>`;
+  $('#gpLayouts').querySelectorAll('[data-lysave]').forEach(bt=>bt.onclick=async()=>{const s=j.sources[+bt.dataset.lysave];
+   const r=await ask({title:t('layouts.save_title'),fields:[{label:t('layouts.name'),value:s.kind==='current'?(x.clean_name||g.title||g.name):s.title}],ok:t('btn.save')});if(!r)return;
+   const res=await api('/api/layouts/save',{game:g.path,exe:x.exe,src:s.src,name:r[0]});if(res.ok)toast(res.template?t('layouts.saved',{name:res.name}):t('layouts.saved_no_steam'),'ok');});
+ }catch(e){$('#gpLayouts').textContent=t('status.error');}}
+async function loadLayouts(){try{const j=await(await fetch('/api/layouts')).json();const ls=j.layouts||[];$('#lyWarn').hidden=j.templates!==false;
+ $('#lyList').innerHTML=ls.map(l=>lyRow(l.name,[l.game?t('layouts.from_game',{game:l.game}):t('layouts.from_file'),when(l.created),j.templates&&!l.template&&t('layouts.not_in_steam')],
+  `<button class="ghost sm" data-lyren="${esc(l.id)}" title="${t('layouts.rename')}" aria-label="${t('layouts.rename')}">✎</button><a href="/api/layouts/file?id=${esc(l.id)}" download><button class="ghost sm" title="${t('layouts.download')}" aria-label="${t('layouts.download')}">⤓</button></a><button class="danger sm" data-lydel="${esc(l.id)}">${t('layouts.delete')}</button>`)).join('')||`<div class="empty">${t('layouts.empty')}</div>`;
+ const byId=id=>ls.find(l=>l.id===id);
+ $('#lyList').querySelectorAll('[data-lyren]').forEach(bt=>bt.onclick=async()=>{const l=byId(bt.dataset.lyren);const r=await ask({title:t('layouts.rename'),fields:[{label:t('layouts.name'),value:l.name}],ok:t('btn.save')});if(!r)return;
+  const res=await api('/api/layouts/rename',{id:l.id,name:r[0]});if(res.ok){toast(t('layouts.renamed'),'ok');loadLayouts();}});
+ $('#lyList').querySelectorAll('[data-lydel]').forEach(bt=>bt.onclick=async()=>{const l=byId(bt.dataset.lydel);const r=await ask({title:t('layouts.delete_title',{name:l.name}),text:t('layouts.delete_text'),ok:t('layouts.delete'),danger:true});if(!r)return;
+  const res=await api('/api/layouts/delete',{id:l.id});if(res.ok){toast(t('layouts.deleted'),'ok');loadLayouts();}});
+ }catch(e){$('#lyList').innerHTML=`<div class="empty err">${t('status.error')}</div>`;}}
+$('#lyUp').onclick=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.vdf,text/plain';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+ const r=await ask({title:t('layouts.upload_title'),fields:[{label:t('layouts.name'),value:f.name.replace(/\.vdf$/i,'')}],ok:t('btn.save')});if(!r)return;
+ const xh=new XMLHttpRequest();xh.open('PUT','/api/layouts/upload?name='+encodeURIComponent(r[0]));xh.onload=()=>{let j={};try{j=JSON.parse(xh.responseText);}catch(e){}
+  if(xh.status===200)toast(j.template?t('layouts.saved',{name:j.name}):t('layouts.saved_no_steam'),'ok');else toast(j.error||t('err.upload'),'err');loadLayouts();};xh.onerror=()=>toast(t('err.upload'),'err');xh.send(f);};inp.click();};
 // ---- import one game that already lives elsewhere on the Deck
 function importNote(j){const a=(j.adopted||[])[0];if(!a)return t('import.added',{name:j.name,n:j.exes.length});
  const bits=[];if(a.name)bits.push(t('import.bit_name',{name:a.name}));if(a.compat)bits.push(compatLabel(a.compat));if(a.covers&&a.covers.length)bits.push(t('import.bit_covers',{n:a.covers.length}));

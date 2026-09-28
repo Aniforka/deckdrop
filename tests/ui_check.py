@@ -16,6 +16,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_layouts import layout, shortcuts_vdf  # noqa: E402
 from test_user_data import Running  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,11 +31,20 @@ def main():
     game = home / "Games" / "Cool Game"
     game.mkdir(parents=True)
     (game / "Game.exe").write_bytes(b"MZ")
+    # the game is in Steam and has a controller layout there, so its page offers to save it
+    steam = home / "Steam"
+    (steam / "userdata" / "123" / "config").mkdir(parents=True)
+    (steam / "userdata" / "123" / "config" / "shortcuts.vdf").write_bytes(
+        shortcuts_vdf("Cool Game", game / "Game.exe", 3000000001))
+    cfg = steam / "steamapps" / "common" / "Steam Controller Configs" / "123" / "config" / "cool game"
+    cfg.mkdir(parents=True)
+    (cfg / "controller_neptune.vdf").write_text(layout("#Title"), "utf-8")
+    (steam / "controller_base" / "templates").mkdir(parents=True)
     (home / ".steam").mkdir()                          # the Deck's Steam is in Russian
     (home / ".steam" / "registry.vdf").write_text('"Registry" { "HKCU" { "Software" { "Valve" { "Steam" '
                                                   '{ "language" "russian" } } } } }', "utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("DECKDROP_")}
-    env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(home / "no-steam"))
+    env.update(HOME=str(home), DECKDROP_CEF="0", DECKDROP_PIN="1234", DECKDROP_STEAM=str(steam))
     app = Running(PROGRAM, env)
     failed = []
     try:
@@ -83,6 +93,16 @@ def main():
                 page.click(".gcard")
                 page.wait_for_timeout(1000)
                 seen.append(page.inner_text("body"))
+                # the game's layout: save it to DeckDrop, then it is listed in Settings
+                page.click("[data-lysave]")
+                page.fill("#mf0", f"Layout {lang}")
+                page.click("#mok")
+                page.wait_for_selector(".toast.ok", timeout=10000)
+                seen.append(page.inner_text("#toasts"))
+                page.click("#tabSettings")
+                page.wait_for_selector(f"#lyList >> text=Layout {lang}", timeout=10000)
+                seen.append(page.inner_text("#sLayouts"))
+                page.click("#tabGames")
                 page.click("#gpBack")
                 page.click("#importGame")
                 page.wait_for_timeout(500)
