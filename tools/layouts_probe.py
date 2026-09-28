@@ -8,15 +8,19 @@ Run it on the Deck (desktop or over SSH) and send back the report it writes:
     python3 layouts_probe.py --cleanup          remove that copy again
 
 GAME is a folder name from the "Steam Controller Configs" list of the report (an AppID or the
-name of a non-Steam game). The report goes to ~/deckdrop-layouts-probe.txt and to the screen.
+name of a non-Steam game). The report goes to ~/deckdrop-layouts-probe.txt and to the screen,
+and then it is shared on the home network until Ctrl+C: the script prints a link to open on a
+phone or PC (only the report is served, nothing else). --no-serve skips that.
 Only --template and --cleanup write anything, and only the one probe file in the templates folder.
 """
 import argparse
 import datetime
+import http.server
 import importlib.util
 import json
 import os
 import re
+import socket
 import sys
 import urllib.request
 from pathlib import Path
@@ -343,6 +347,47 @@ def cleanup(steam):
         say(f"  nothing to remove at {dest}")
 
 
+def lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return socket.gethostname() + ".local"
+
+
+def serve(report, port):
+    """Share the report, and only it, until Ctrl+C: / shows it, /download saves it."""
+    body = Path(report).read_bytes()
+    name = Path(report).name
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            if self.path.startswith("/download"):
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            print("sent the report to", self.client_address[0])
+
+    srv = http.server.HTTPServer(("0.0.0.0", port), Handler)
+    base = f"http://{lan_ip()}:{srv.server_address[1]}"
+    print(f"\nOpen on your phone or PC (same Wi-Fi):\n  {base}/          view\n  {base}/download  save the file")
+    print("Ctrl+C to stop", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--steam", help="Steam folder (found automatically)")
@@ -351,6 +396,8 @@ def main():
     ap.add_argument("--template", metavar="GAME", help="copy GAME's layout into Steam's templates")
     ap.add_argument("--cleanup", action="store_true", help="remove the probe template")
     ap.add_argument("--report", default=str(Path.home() / "deckdrop-layouts-probe.txt"))
+    ap.add_argument("--no-serve", action="store_true", help="do not share the report on the network")
+    ap.add_argument("--serve-port", type=int, default=8089)
     args = ap.parse_args()
 
     steam = steam_root(args.steam)
@@ -369,6 +416,8 @@ def main():
             put_template(steam, args.template)
     Path(args.report).write_text("\n".join(out) + "\n", "utf-8")
     print(f"\nreport saved to {args.report}")
+    if not args.no_serve:
+        serve(args.report, args.serve_port)
 
 
 if __name__ == "__main__":

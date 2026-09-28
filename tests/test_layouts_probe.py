@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,7 +53,7 @@ class LayoutsProbeTest(unittest.TestCase):
         self.report = self.home / "report.txt"
 
     def run_probe(self, *extra):
-        r = subprocess.run([sys.executable, str(PROBE), "--steam", str(self.steam), "--no-cdp",
+        r = subprocess.run([sys.executable, str(PROBE), "--steam", str(self.steam), "--no-cdp", "--no-serve",
                             "--report", str(self.report), *extra], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         return self.report.read_text("utf-8")
@@ -77,6 +78,24 @@ class LayoutsProbeTest(unittest.TestCase):
         self.assertIn("probe template is in place", self.run_probe())
         self.run_probe("--cleanup")
         self.assertFalse(probe.exists())
+
+    def test_report_is_shared_and_nothing_else(self):
+        p = subprocess.Popen([sys.executable, "-u", str(PROBE), "--steam", str(self.steam), "--no-cdp",
+                              "--report", str(self.report), "--serve-port", "0"],
+                             stdout=subprocess.PIPE, text=True)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        for line in p.stdout:
+            if "/download" in line:
+                url = line.split()[0].rsplit("/", 1)[0]
+                break
+        url = url.replace(url.split("//")[1].split(":")[0], "127.0.0.1")
+        report = self.report.read_bytes()
+        for path in ("/", "/download", "/../../etc/passwd"):
+            with urllib.request.urlopen(url + path, timeout=10) as r:
+                self.assertEqual(r.read(), report)
+        with urllib.request.urlopen(url + "/download", timeout=10) as r:
+            self.assertIn("attachment", r.headers["Content-Disposition"])
 
     def test_unknown_game(self):
         self.assertIn("pick a folder name", self.run_probe("--template", "nope"))
