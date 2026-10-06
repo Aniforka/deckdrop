@@ -73,6 +73,15 @@ select.sel{padding:6px 10px;font-size:.85em;border-radius:10px;flex:0 1 auto;max
 .tile .cap b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .tile .k{position:absolute;top:8px;left:8px;background:#0b1320cc;backdrop-filter:blur(6px);padding:3px 8px;border-radius:999px;font-size:.72em;color:#dfe8f2}
 .tile .k.v{background:#7c6cffcc}
+.tile{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}.tile img{-webkit-user-drag:none}
+.tile .ck{position:absolute;z-index:1;top:8px;right:8px;width:24px;height:24px;border-radius:50%;border:2px solid #ffffffcc;background:#0b132088;display:none;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#0b1320}
+.grid.selecting .tile .ck{display:flex}.grid.selecting .tile:hover{transform:none}
+.tile.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset}.tile.sel img{opacity:.75}
+.tile.sel .ck{background:var(--accent);border-color:var(--accent)}.tile.sel .ck::after{content:"✓"}
+#selbar{position:fixed;left:50%;bottom:14px;transform:translate(-50%,160%);width:min(640px,calc(100vw - 24px));display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;background:#1c2937f7;border:1px solid #ffffff1a;border-radius:16px;box-shadow:0 12px 34px #000a;z-index:15;transition:transform .2s ease-out;backdrop-filter:blur(10px)}
+#selbar.on{transform:translate(-50%,0)}
+#selbar .t{flex:1;min-width:110px;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.selecting #toasts{bottom:96px}
 #viewer{position:fixed;inset:0;background:#05090fe6;backdrop-filter:blur(10px);display:none;flex-direction:column;z-index:20}
 #viewer.on{display:flex}
 .vbar{display:flex;gap:8px;padding:12px 14px;align-items:center;flex-wrap:wrap}
@@ -133,3 +142,5 @@ label.chk input{width:18px;height:18px;accent-color:var(--accent);flex:none}
 .perf-item small,.perf-tab small{display:block;color:var(--muted);font-size:.85em;margin-top:2px;overflow-wrap:anywhere}
 .perf-tab{width:100%;border-collapse:collapse;font-size:.92em}
 .perf-tab td{padding:6px 0;border-top:1px solid #ffffff0d;vertical-align:top}.perf-tab td:first-child{color:var(--muted);padding-right:12px;width:45%}
+body.selecting>.wrap{padding-bottom:120px}
+@media (max-width:560px){#selbar #sdl,#selbar #sdel{flex:1}}

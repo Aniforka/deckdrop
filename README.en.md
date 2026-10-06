@@ -446,6 +446,10 @@ is there), videos and pictures from `~/Videos` and `~/Pictures`. Tap a tile to v
 "download" saves it to your phone, "delete from Deck 🔒" frees the space. Videos play and seek
 fine on iPhones too.
 
+**Several at once**: hold a tile (right-click on a PC, or the "select" button) and the gallery
+switches to selecting; tap more tiles, or "all". The bar at the bottom shows how many and how
+much, and offers "download" (one zip, or separate files) and "delete 🔒" (one PIN for all of them).
+
 ## Supported links
 
 | Source | What happens |

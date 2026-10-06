@@ -6,6 +6,24 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.5.1 — 2026-10-06
+
+### English
+
+**Added**
+- **Select several items in Media.** Hold a photo or a video (right-click on a PC, or the new
+  "select" button) and the gallery switches to selecting: tap more tiles or pick "all". The bar at
+  the bottom shows how many are selected and their size, and offers "download" (one zip archive,
+  or separate files) and "delete 🔒" with one PIN for all of them.
+
+### Русский
+
+**Добавлено**
+- **Выбор нескольких файлов в «Медиа».** Зажми фото или видео (на ПК правый клик или новая
+  кнопка «выбрать»), и галерея перейдёт в режим выбора: тапай другие плитки или жми «все».
+  Панель внизу показывает, сколько выбрано и сколько это весит, и предлагает «скачать» (одним
+  zip-архивом или отдельными файлами) и «удалить 🔒» с одним PIN на все.
+
 ## 0.5.0 — 2026-09-28
 
 ### English

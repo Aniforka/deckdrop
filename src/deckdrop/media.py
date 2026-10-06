@@ -6,9 +6,11 @@ import re
 import shutil
 import subprocess
 import time
+import zipfile
 
 from .config import CACHE_DIR, CHUNK, FFMPEG, IMAGE_EXTS, MEDIA_DIRS, VIDEO_EXTS, log
 from .i18n import tr
+from .paths import safe_name
 from .steam.library import _SC_CACHE, library_folders, shortcuts_index, userdata_dirs
 
 
@@ -195,3 +197,43 @@ def media_delete(mid):
             pass
     scan_media(force=True)
     return item["name"]
+
+
+def media_delete_many(ids):
+    """Delete several items; returns (names removed, errors "name: reason")."""
+    removed, errors = [], []
+    for mid in dict.fromkeys(ids):
+        try:
+            removed.append(media_delete(mid))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{_MEDIA['by_id'].get(mid, {}).get('name', mid)}: {e}")
+    return removed, errors
+
+
+def media_zip_names(items):
+    """Name inside the zip for each item: <game>/<file>, Steam clips as .mp4, never twice the same."""
+    seen, names = set(), []
+    for it in items:
+        name = it["path"].name + (".mp4" if it["kind"] == "clip" else "")
+        base, ext = os.path.splitext(name)
+        cand, n = f"{safe_name(it['game'])}/{name}", 1
+        while cand.lower() in seen:
+            n += 1
+            cand = f"{safe_name(it['game'])}/{base} ({n}){ext}"
+        seen.add(cand.lower())
+        names.append(cand)
+    return names
+
+
+def media_zip(ids, out):
+    """Write the items as a zip into the stream `out` (it need not be seekable).
+
+    Stored, not compressed: photos and videos are compressed already, and the Deck starts sending
+    at once instead of making the phone wait."""
+    items = [media_item(mid) for mid in dict.fromkeys(ids)]
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        for it, name in zip(items, media_zip_names(items)):
+            src = clip_mp4(it) if it["kind"] == "clip" else it["path"]
+            info = zipfile.ZipInfo(name, time.localtime(it["time"])[:6])
+            with open(src, "rb") as f, z.open(info, "w", force_zip64=True) as dst:
+                shutil.copyfileobj(f, dst, CHUNK)
