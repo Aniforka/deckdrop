@@ -5,6 +5,7 @@ import re
 import secrets
 import socket
 import threading
+import time
 import urllib.parse
 import zipfile
 from http.server import BaseHTTPRequestHandler
@@ -29,7 +30,10 @@ from ..games import (
 )
 from ..i18n import carry, tr
 from ..jobs import JOBS, LOCK, fail, new_job
-from ..media import PLACEHOLDER_SVG, clip_mp4, media_delete, media_item, media_thumb, scan_media
+from ..media import (
+    PLACEHOLDER_SVG, clip_mp4, media_delete, media_delete_many, media_item, media_thumb, media_zip,
+    scan_media,
+)
 from ..mega import mega_probe
 from ..net import mask_proxy
 from ..patches import (
@@ -274,6 +278,29 @@ class Handler(BaseHTTPRequestHandler):
                 items = scan_media(force="refresh" in q)
                 self.send_json({"items": [{k: v for k, v in it.items() if k not in ("path", "thumb")}
                                           for it in items], "ffmpeg": bool(FFMPEG)})
+            elif path == "/api/media/zip":
+                if not self.media_auth(q):
+                    return
+                ids = [i for i in self.q1(q, "ids").split(",") if i]
+                if not ids:
+                    raise ValueError(tr("media.none_selected"))
+                for mid in ids:
+                    media_item(mid)          # a missing one answers 404 before the zip starts
+                name = f"deckdrop-media-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", "attachment; filename=" + name)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")     # length unknown: the end of the zip is the end of the answer
+                self.end_headers()
+                if self.command != "HEAD":
+                    try:
+                        media_zip(ids, self.wfile)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        pass
+                    except Exception as e:  # noqa: BLE001  headers are gone: a cut zip is all the phone can be told
+                        log(f"media zip failed: {e!r}")
+                self.close_connection = True
             elif path.startswith("/media/"):
                 if not self.media_auth(q):
                     return
@@ -403,7 +430,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not media_token_ok(self.headers.get("X-Media-Token") or s("token")):
                     return self.send_json({"error": tr("media.need_password"), "auth": True}, 401)
                 check_pin(body.get("pin"))
-                self.send_json({"ok": True, "removed": media_delete(s("id"))})
+                if isinstance(body.get("ids"), list):
+                    removed, errors = media_delete_many([str(i) for i in body["ids"]])
+                    self.send_json({"ok": bool(removed) or not errors, "removed": removed, "errors": errors})
+                else:
+                    self.send_json({"ok": True, "removed": media_delete(s("id"))})
             elif path == "/api/settings":
                 if any(k in body for k in PROTECTED_KEYS):
                     check_pin(body.get("pin"))

@@ -41,7 +41,7 @@
  <div id="mediaAuth"></div>
  <div id="mediaBody" hidden>
   <div class="card"><div class="chips"><button data-f="all" class="on">{{media.all}}</button><button data-f="image">{{media.screenshots}}</button><button data-f="video">{{media.videos}}</button>
-   <input id="mq" type="search" placeholder="{{media.search}}"><button class="ghost sm" id="mrefresh" title="{{media.rescan}}">⟳</button></div>
+   <input id="mq" type="search" placeholder="{{media.search}}"><button class="ghost sm" id="mselect">{{media.select}}</button><button class="ghost sm" id="mrefresh" title="{{media.rescan}}">⟳</button></div>
    <div class="muted" id="mhint" style="font-size:.85em;margin-bottom:10px"></div>
    <div class="grid" id="mgrid"></div></div>
  </div>
@@ -94,6 +94,7 @@
 </div>
 <footer><span id="ffm"></span><span class="acts"><button class="ghost sm" id="mediaReset">{{footer.media_reset}}</button><button class="ghost sm" id="update">{{footer.update}}</button></span></footer>
 </div>
+<div id="selbar"><button class="ghost sm" id="sdone">✕ {{media.cancel_select}}</button><span class="t" id="scount"></span><button class="ghost sm" id="sall"></button><button class="sm" id="sdl">{{media.download}}</button><button class="danger sm" id="sdel">{{media.delete}}</button></div>
 <div id="viewer"><div class="vbar"><span class="t" id="vtitle"></span><a id="vopen" target="_blank" rel="noopener"><button class="ghost sm">{{viewer.open}}</button></a><a id="vdl"><button class="ghost sm">{{viewer.download}}</button></a><button class="danger sm" id="vdel">{{viewer.delete}}</button><button class="ghost sm" id="vclose">✕</button></div><div class="vbody" id="vbody"></div></div>
 <div id="modal"><div class="mbox" id="mbox"></div></div>
 <div id="toasts"></div>
