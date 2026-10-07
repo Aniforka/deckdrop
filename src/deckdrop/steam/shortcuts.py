@@ -71,7 +71,8 @@ def drain_pending():
     remaining, done = [], 0
     for op in ops:
         try:
-            appid = resolve_appid(op["exe"])
+            appid = (op.get("appid") or resolve_appid(op["exe"])
+                     or (resolve_appid(op["old"]) if op.get("old") else None))
             if not appid:
                 remaining.append(op)
                 continue
@@ -79,6 +80,8 @@ def drain_pending():
                 CDP.set_name(appid, op["name"])
             elif op["op"] == "compat":
                 CDP.set_compat(appid, op.get("tool") or "")
+            elif op["op"] == "exe":                  # a game update renamed its executable
+                CDP.set_exe(appid, f'"{op["exe"]}"', f'"{Path(op["exe"]).parent}"')
             elif op["op"] == "layout":
                 apply_default(op["exe"], appid)      # records how it went; a deleted layout is skipped
             done += 1

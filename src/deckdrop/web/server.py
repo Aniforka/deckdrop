@@ -24,6 +24,9 @@ from ..config import CACHE_DIR, CHUNK, FFMPEG, GAMES_DIR, MIME, PORT, UPDATE_URL
 from ..detect import game_exe_path
 from ..diagnostics import benchmark, report_md, self_check
 from ..downloads import cancel_all, cancel_job, start_download, start_mega_downloads
+from ..gameupdate import (
+    apply_update, discard_update, drop_backup, new_version_job, rollback_update, update_status,
+)
 from ..games import (
     add_to_steam, delete_game, game_info, import_candidates, import_game, list_games,
     set_hidden, unimport_game,
@@ -225,6 +228,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"candidates": import_candidates()})
             elif path == "/api/game/info":
                 self.send_json(game_info(self.q1(q, "path")))
+            elif path == "/api/game/update":
+                self.send_json(update_status(self.q1(q, "game")))
             elif path == "/api/game/dir":
                 self.send_json(game_dir_list(self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "dir")))
             elif path == "/api/art/current":
@@ -350,6 +355,21 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/game/archive/apply":
                 self.send_json({"ok": True, **patch_apply(s("token"), bool(body.get("strip")),
                                                           body.get("backup", True) is not False)})
+            elif path == "/api/game/update/link":
+                upd, root = new_version_job(s("game"), s("exe"), s("title"))
+                self.send_json(start_download(s("url"), update=upd, root=root).to_dict())
+            elif path == "/api/game/update/apply":
+                self.send_json({"ok": True, **apply_update(
+                    s("game"), s("token"), s("exe") or None, body.get("keep_settings", True) is not False,
+                    bool(body.get("cleanup")))})
+            elif path == "/api/game/update/discard":
+                discard_update(s("game"))
+                self.send_json({"ok": True})
+            elif path == "/api/game/update/rollback":
+                self.send_json({"ok": True, **rollback_update(s("game"))})
+            elif path == "/api/game/update/drop_backup":
+                drop_backup(s("game"))
+                self.send_json({"ok": True})
             elif path == "/api/game/archive/discard":
                 _patch_drop(s("token"))
                 self.send_json({"ok": True})
@@ -494,6 +514,25 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/upload/"):
                 name = safe_name(path[len("/api/upload/"):])
                 job = new_job("upload", name, root_for(self.q1(q, "disk")) if self.q1(q, "disk") else None)
+                job.total = int(self.headers.get("Content-Length") or 0)
+                job.status = "uploading"
+                dest, part = reserve_path(job.root / "_inbox", name)
+                job.work = str(part)
+                try:
+                    self.read_body_to(part, job)
+                    part.rename(dest)
+                    job.file = str(dest)
+                except Exception as e:  # noqa: BLE001
+                    part.unlink(missing_ok=True)
+                    fail(job, str(e))
+                    return self.send_json({"error": str(e)}, 400)
+                threading.Thread(target=carry(finish), args=(job, dest), daemon=True).start()
+                self.send_json(job.to_dict())
+            elif path == "/api/game/update/upload":
+                upd, root = new_version_job(self.q1(q, "game"), self.q1(q, "exe"), self.q1(q, "title"))
+                name = safe_name(self.q1(q, "name"))
+                job = new_job("upload", name, root)
+                job.update = upd
                 job.total = int(self.headers.get("Content-Length") or 0)
                 job.status = "uploading"
                 dest, part = reserve_path(job.root / "_inbox", name)

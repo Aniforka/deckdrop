@@ -17,6 +17,7 @@ class Job:
         self.kind = kind            # download | upload | extract
         self.label = label
         self.status = "queued"      # queued resolving downloading uploading extracting needs_password done error
+        #                             update_ready (a new version unpacked aside, waiting on the game page)
         self.done = 0
         self.total = 0
         self.file = None
@@ -24,6 +25,7 @@ class Job:
         self.error = None
         self.cancel = False
         self.work = None            # file or folder being written now, spared by the inbox cleanup
+        self.update = None          # {game, exe, title}: a new version of that game, not a new game
         self.root = Path(root) if root else default_root()
         self.started = time.time()
 
@@ -35,6 +37,8 @@ class Job:
             "speed": int(self.done / elapsed) if self.status in ("downloading", "uploading") else 0,
             "file": self.file, "game_dir": self.game_dir, "error": self.error,
             "disk": disk_label_for(self.root),
+            "update": (self.update or {}).get("title"),
+            "update_game": (self.update or {}).get("game"),
         }
 
 

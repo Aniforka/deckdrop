@@ -84,6 +84,7 @@ document.addEventListener('change',e=>{const el=e.target;if(el.dataset.compat!==
 document.addEventListener('click',async e=>{const card=e.target.closest('[data-open]');if(card&&!e.target.closest('button,select,input,a')){openGame(card.dataset.open);return;}
  const b=e.target.closest('button');if(!b)return;const ds=b.dataset;
  if(ds.cancel)api('/api/cancel',{id:+ds.cancel});
+ if(ds.opengame)openGame(ds.opengame);
  if(ds.pwgo!==undefined){const box=b.closest('.item');const pw=box.querySelector('input[type=password]').value;const rem=box.querySelector('input[type=checkbox]').checked;if(!pw){toast(t('err.enter_password'),'err');return;}api('/api/job/password',{id:+ds.pwgo,password:pw,remember:rem});}
  if(ds.add!==undefined)addFlow(ds.game,ds.add);
  if(ds.rename!==undefined){const r=await ask({title:t('rename.title'),fields:[{label:t('common.name'),value:ds.name}],ok:t('rename.ok')});if(!r)return;const j=await api('/api/game/rename',{game:ds.game,exe:ds.rename,name:r[0]});if(j.ok)toast(j.note,'ok');}
@@ -120,24 +121,26 @@ function renderList(s){lastJobs=s.jobs||[];
  const running=lastJobs.filter(j=>j.kind==='download'&&CANCELLABLE.includes(j.status)).length;$('#stopAll').hidden=!running;$('#stopAll').textContent=running>1?t('jobs.stop_all_n',{n:running}):t('jobs.stop_all');
  const jsig=JSON.stringify(s.jobs);
  if(jsig!==sigJobs&&!focusWithin('#jobs')){sigJobs=jsig;
- $('#jobs').innerHTML=s.jobs.map(j=>{const act=j.status==='downloading'||j.status==='uploading';const pct=j.total?Math.round(j.done*100/j.total):0;
-  let st=L['status.'+j.status]?t('status.'+j.status):j.status;if(act)st+=' · '+fmt(j.done)+(j.total?' / '+fmt(j.total)+' · '+pct+'%':'')+(j.speed?' · '+t('unit.per_sec',{size:fmt(j.speed)}):'');
-  const cls=j.status==='error'?'err':j.status==='done'?'ok':j.status==='cancelled'?'':'busy';const can=j.kind==='download'&&CANCELLABLE.includes(j.status);
-  return `<div class="item"><div class="top"><b>${esc(j.label)}</b><span class="acts"><span class="pill k">${esc(j.disk||'')}</span>${can?`<button class="ghost sm" data-cancel="${j.id}">${t('jobs.cancel')}</button>`:''}</span></div>`
-   +(act?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')+`<div class="st ${cls}">${esc(st)}${j.error?' — '+esc(j.error):''}</div>`
-   +(j.status==='needs_password'?`<div class="row wrap" style="margin-top:8px"><input type="password" placeholder="${t('jobs.archive_password')}" style="flex:1;min-width:140px;padding:8px 12px;font-size:.95em"><label class="small muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked>${t('jobs.remember')}</label><button class="sm" data-pwgo="${j.id}">${t('jobs.unpack')}</button></div>`:'')
-   +(j.game_dir?`<div class="path">→ ${esc(j.game_dir)}</div>`:j.status==='done'&&j.file?`<div class="path">→ ${esc(j.file)}</div>`:'')+'</div>';}).join('')||`<div class="empty">${t('jobs.empty')}</div>`;}
+ $('#jobs').innerHTML=s.jobs.map(jobItem).join('')||`<div class="empty">${t('jobs.empty')}</div>`;}
  const gsig=JSON.stringify([s.games,showHidden]);
  if(gsig!==sigGames){sigGames=gsig;const nh=s.games.filter(g=>g.hidden).length;$('#toggleHidden').textContent=showHidden?t('games.hide_hidden'):t('games.show_hidden',{n:nh});$('#toggleHidden').hidden=!nh&&!showHidden;
   $('#games').innerHTML=s.games.filter(g=>showHidden||!g.hidden).map(listCard).join('')||`<div class="empty">${t('games.empty')}</div>`;}}
+function jobItem(j){const act=j.status==='downloading'||j.status==='uploading';const pct=j.total?Math.round(j.done*100/j.total):0;
+  let st=L['status.'+j.status]?t('status.'+j.status):j.status;if(act)st+=' · '+fmt(j.done)+(j.total?' / '+fmt(j.total)+' · '+pct+'%':'')+(j.speed?' · '+t('unit.per_sec',{size:fmt(j.speed)}):'');
+  const cls=j.status==='error'?'err':j.status==='done'||j.status==='update_ready'?'ok':j.status==='cancelled'?'':'busy';const can=j.kind==='download'&&CANCELLABLE.includes(j.status);
+  return `<div class="item"><div class="top"><b>${esc(j.label)}</b><span class="acts">${j.update?`<span class="pill acc">${t('jobs.update_of',{name:esc(j.update)})}</span>`:''}<span class="pill k">${esc(j.disk||'')}</span>${can?`<button class="ghost sm" data-cancel="${j.id}">${t('jobs.cancel')}</button>`:''}${j.status==='update_ready'&&view.kind!=='game'?`<button class="sm" data-opengame="${esc(j.game_dir)}">${t('jobs.open_game')}</button>`:''}</span></div>`
+   +(act?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')+`<div class="st ${cls}">${esc(st)}${j.error?' — '+esc(j.error):''}</div>`
+   +(j.status==='needs_password'?`<div class="row wrap" style="margin-top:8px"><input type="password" placeholder="${t('jobs.archive_password')}" style="flex:1;min-width:140px;padding:8px 12px;font-size:.95em"><label class="small muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked>${t('jobs.remember')}</label><button class="sm" data-pwgo="${j.id}">${t('jobs.unpack')}</button></div>`:'')
+   +(j.game_dir?`<div class="path">→ ${esc(j.game_dir)}</div>`:j.status==='done'&&j.file?`<div class="path">→ ${esc(j.file)}</div>`:'')+'</div>';}
 function renderGame(s){const g=(s.games||[]).find(x=>x.path===view.path);
- if(!g){$('#gpHead').innerHTML=`<div class="empty">${t('game.not_found')}</div>`;$('#gpExes').innerHTML='';$('#gpCoversCard').hidden=$('#gpSavesCard').hidden=$('#gpFilesCard').hidden=$('#gpLayoutsCard').hidden=true;$('#gpActs').innerHTML='';$('#gpInfo').innerHTML='';return;}
+ if(!g){$('#gpHead').innerHTML=`<div class="empty">${t('game.not_found')}</div>`;$('#gpExes').innerHTML='';$('#gpCoversCard').hidden=$('#gpSavesCard').hidden=$('#gpFilesCard').hidden=$('#gpLayoutsCard').hidden=$('#gpUpdCard').hidden=true;$('#gpActs').innerHTML='';$('#gpInfo').innerHTML='';return;}
  if(extrasFor!==g.path){extrasFor=g.path;loadGameExtras(g);}
+ renderUpdJobs(s,g);
  const sig=JSON.stringify([g,[...busy],s.compat_tools,gameInfo]);if(sig===sigGame||focusWithin('#gamePage')||Date.now()<holdGames)return;sigGame=sig;
  const ch=chosenExe(g);const inSteam=g.exes.some(x=>x.in_steam);
  $('#gpHead').innerHTML=`<div class="top"><div style="min-width:0"><div class="gtitle">${esc(g.title||g.name)}${inSteam?`<button class="ghost sm" data-rename="${esc(ch.exe)}" data-game="${esc(g.path)}" data-name="${esc(ch.clean_name||ch.name)}" title="${t('game.rename')}">✎</button>`:''}</div><div class="path">${esc(g.path)}</div></div><span class="acts"><span class="pill k">${esc(g.disk)}</span>${inSteam?`<span class="pill">${t('game.in_steam')}</span>`:`<span class="pill k">${t('game.not_added')}</span>`}${g.imported?`<span class="pill acc" title="${t('game.own_title')}">${t('game.own')}</span>`:''}${g.hidden?`<span class="pill warn">${t('game.hidden')}</span>`:''}</span></div>`;
  $('#gpExes').innerHTML=g.exes.map(x=>exeRow(g,x)).join('')||`<div class="empty">${t('game.no_exes')}</div>`;
- $('#gpCoversCard').hidden=!inSteam;$('#gpSavesCard').hidden=!inSteam;$('#gpLayoutsCard').hidden=!inSteam;$('#gpFilesCard').hidden=!g.exes.length;
+ $('#gpCoversCard').hidden=!inSteam;$('#gpSavesCard').hidden=!inSteam;$('#gpLayoutsCard').hidden=!inSteam;$('#gpFilesCard').hidden=$('#gpUpdCard').hidden=!g.exes.length;
  $('#gpActs').innerHTML=(g.hidden?`<button class="ghost sm" data-hide="${esc(g.path)}" data-hidden="0">${t('game.unhide')}</button>`:`<button class="ghost sm" data-hide="${esc(g.path)}" data-hidden="1">${t('game.hide')}</button>`)+(g.imported?`<button class="ghost sm" data-unimport="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('unimport.button')}</button>`:'')
   +`<button class="danger sm" data-del="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('game.delete')}</button>`
   +(g.imported?`<span class="hint" style="flex-basis:100%">${t('game.own_hint')}</span>`:'');
@@ -167,9 +170,54 @@ document.addEventListener('visibilitychange',tick);
 applyView(parseHash());refresh();setInterval(tick,1000);
 // ---- game page extras: folder size, covers with preview/replace, saves
 const LAB={portrait:[t('slot.portrait'),t('slot.portrait_size'),'2/3'],landscape:[t('slot.landscape'),'920×430','920/430'],hero:[t('slot.hero'),'1920×620','1920/620'],logo:[t('slot.logo'),t('slot.logo_size'),'16/5'],icon:[t('slot.icon'),t('slot.icon_size'),'1/1']};
-function loadGameExtras(g){gameInfo=null;const ch=chosenExe(g);if(g.exes.length)setupFiles(g);
+function loadGameExtras(g){gameInfo=null;const ch=chosenExe(g);if(g.exes.length){setupFiles(g);setupUpdate(g);}
  fetch('/api/game/info?path='+encodeURIComponent(g.path)).then(r=>r.json()).then(j=>{if(!j.error){gameInfo={path:g.path,...j};sigGame='';render(lastState);}}).catch(()=>{});
  if(ch&&ch.in_steam){loadCovers(g,ch);loadSaves(g,ch);loadLayoutSources(g,ch);}else{$('#gpCovers').innerHTML='';$('#gpSaves').innerHTML='';$('#gpLayouts').innerHTML='';}}
+// ---- a new version of the game: by link or from the device, unpacked aside; shown, then applied or dropped.
+// The game keeps its folder and the shortcut its app id, so Proton prefix, saves and settings stay.
+let updJobSig='',updReady=new Set();
+function setupUpdate(g){$('#gpUpdUrl').value='';$('#gpUpd').innerHTML='';$('#gpUpdJob').innerHTML='';updJobSig='';
+ $('#gpUpdGo').onclick=async()=>{const url=$('#gpUpdUrl').value.trim();if(!isUrl(url)){toast(t('gup.need_url'),'err');return;}
+  const j=await api('/api/game/update/link',{game:g.path,exe:chosenExe(g).exe,url,title:g.title||g.name});if(j.id){$('#gpUpdUrl').value='';$('#gpUpdUrl').blur();toast(t('gup.started'),'ok');}};
+ $('#gpUpdUrl').onkeydown=e=>{if(e.key==='Enter')$('#gpUpdGo').click();};
+ $('#gpUpdFile').onclick=()=>{const inp=document.createElement('input');inp.type='file';inp.onchange=()=>{const f=inp.files[0];if(!f)return;
+  const q=`game=${encodeURIComponent(g.path)}&exe=${encodeURIComponent(chosenExe(g).exe)}&name=${encodeURIComponent(f.name)}&title=${encodeURIComponent(g.title||g.name)}`;
+  const xh=new XMLHttpRequest();xh.open('PUT','/api/game/update/upload?'+q);xh.onload=()=>{let r={};try{r=JSON.parse(xh.responseText);}catch(e){}if(xh.status!==200)toast(r.error||t('err.upload'),'err');refresh();};
+  xh.onerror=()=>toast(t('err.upload_named',{name:f.name}),'err');xh.send(f);setTimeout(refresh,300);};inp.click();};
+ loadUpdate(g);}
+function renderUpdJobs(s,g){const js=(s.jobs||[]).filter(j=>j.update_game===g.path);
+ const fresh=js.filter(j=>j.status==='update_ready'&&!updReady.has(j.id));fresh.forEach(j=>updReady.add(j.id));if(fresh.length)loadUpdate(g);
+ const busyJobs=js.filter(j=>j.status!=='update_ready'),sig=JSON.stringify(busyJobs);if(sig===updJobSig||focusWithin('#gpUpdJob'))return;
+ updJobSig=sig;$('#gpUpdJob').innerHTML=busyJobs.map(jobItem).join('');}
+async function loadUpdate(g){let j;try{j=await(await fetch('/api/game/update?game='+encodeURIComponent(g.path))).json();}catch(e){return;}
+ if(view.path!==g.path)return;const box=$('#gpUpd');
+ if(j.error){box.innerHTML=`<div class="hint err">${esc(j.error)}</div>`;return;}
+ const p=j.pending,b=j.backup;
+ if(p){const exes=p.new_exes.slice();if(!p.exe_found)exes.push(p.exe);
+  box.innerHTML=`<div class="updbox"><b>${t('gup.ready',{version:esc(p.version)})}</b>`
+   +`<div class="hint">${t('gup.stat',{added:p.added,replaced:p.replaced,size:fmt(p.size)})}</div>`
+   +(p.replaced?`<details class="hint"><summary>${t('gup.replaced_list')}</summary><ul class="list">${p.replaced_sample.map(x=>`<li><code>${esc(x)}</code></li>`).join('')}${p.replaced>p.replaced_sample.length?`<li>${t('common.and_more',{n:p.replaced-p.replaced_sample.length})}</li>`:''}</ul></details>`:'')
+   +(p.exe_found?`<div class="hint">${t('gup.exe_same_html',{exe:esc(p.exe)})}</div>`
+     :`<div class="frow"><label for="updExe">${p.new_exes.length?t('gup.exe_new_html',{exe:esc(p.exe)}):t('gup.exe_none_html',{exe:esc(p.exe)})}</label><select id="updExe">${exes.map(x=>`<option value="${esc(x)}" ${x===(p.new_exe||p.exe)?'selected':''}>${esc(x)}${x===p.exe?' · '+t('gup.exe_old'):''}</option>`).join('')}</select><div class="hint" style="margin-top:6px">${t('gup.exe_keeps')}</div></div>`)
+   +`<div class="hint ok">${t('gup.saves_kept')}${p.kept_saves?' '+t('gup.saves_kept_n',{n:p.kept_saves}):''}</div>`
+   +(p.settings_count?`<label class="chk"><input type="checkbox" id="updCfg" checked>${t('gup.keep_settings',{names:p.settings.map(x=>`<code>${esc(x)}</code>`).join(', ')})}</label>`:'')
+   +(p.old_only-p.old_only_kept>0?`<label class="chk"><input type="checkbox" id="updClean">${t('gup.cleanup',{n:p.old_only-p.old_only_kept})}</label><div class="hint">${t('gup.cleanup_hint',{names:p.old_only_sample.map(x=>`<code>${esc(x)}</code>`).join(', ')})}</div>`:'')
+   +(p.blocked_count?`<div class="hint err">${t('gup.blocked',{n:p.blocked_count,names:p.blocked.map(esc).join(', ')})}</div>`:'')
+   +(j.running?`<div class="hint err">${t('gup.running')}</div>`:'')
+   +`<div class="btns"><button class="ghost" id="updNo">${t('btn.cancel')}</button><button id="updGo" ${j.running?'disabled':''}>${t('gup.apply')}</button></div></div>`;
+  $('#updNo').onclick=async()=>{const r=await api('/api/game/update/discard',{game:g.path});if(r.ok){toast(t('gup.discarded'),'ok');loadUpdate(g);}};
+  $('#updGo').onclick=async()=>{$('#updGo').disabled=true;$('#updGo').textContent=t('gup.applying');
+   const r=await api('/api/game/update/apply',{game:g.path,token:p.token,exe:$('#updExe')?$('#updExe').value:'',keep_settings:$('#updCfg')?$('#updCfg').checked:true,cleanup:!!($('#updClean')&&$('#updClean').checked)});
+   if(r.ok){toast(t('gup.done',{version:r.version,added:r.added,replaced:r.replaced})+(r.kept_saves||r.kept_settings?' '+t('gup.done_kept',{n:r.kept_saves+r.kept_settings}):'')+(r.exe_change?' '+(r.exe_change.how==='live'?t('gup.exe_switched',{exe:r.exe_change.new}):t('gup.exe_queued',{exe:r.exe_change.new})):''),'ok');
+    if(r.problems_count)toast(t('gup.problems',{n:r.problems_count,first:r.problems[0]}),'err');sigGame='';}
+   loadUpdate(g);};}
+ else if(b){box.innerHTML=`<div class="hint">${t('gup.last',{version:esc(b.version||''),when:when(b.at)})} ${t('gup.backup_hint')}</div>`
+   +`<div class="acts" style="margin-top:8px"><button class="ghost sm" id="updRb">${t('gup.rollback')}</button><button class="ghost sm" id="updDrop">${t('gup.drop_backup')}</button></div>`;
+  $('#updRb').onclick=async()=>{const r=await ask({title:t('gup.rollback_title'),text:t('gup.rollback_text',{version:b.version||''}),ok:t('gup.rollback'),danger:true});if(!r)return;
+   const x=await api('/api/game/update/rollback',{game:g.path});if(x.ok){toast(t('gup.rolled_back'),'ok');sigGame='';}loadUpdate(g);};
+  $('#updDrop').onclick=async()=>{const r=await ask({title:t('gup.drop_title'),text:t('gup.drop_text'),ok:t('delete.ok'),danger:true});if(!r)return;
+   const x=await api('/api/game/update/drop_backup',{game:g.path});if(x.ok)toast(t('gup.dropped'),'ok');loadUpdate(g);};}
+ else box.innerHTML='';}
 // ---- files inside the game: a patch next to the exe, or anywhere below the game folder
 let filesTimer=0;
 function filesQ(g){const exe=$('#gpFExe').value||((chosenExe(g)||{}).exe)||'';return `game=${encodeURIComponent(g.path)}&exe=${encodeURIComponent(exe)}&dir=${encodeURIComponent($('#gpFDir').value.trim())}`;}
