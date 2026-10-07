@@ -7,6 +7,7 @@ from http.server import ThreadingHTTPServer
 from . import __version__
 from .config import FFMPEG, GAMES_DIR, PORT, STEAM_ROOT, log
 from .diagnostics import PENDING_THREAD
+from .gameupdate import sweep_stages
 from .service import install, uninstall
 from .state import STATE, ensure_pin, load_state
 from .steam.cdp import CDP
@@ -30,6 +31,10 @@ def main():
         sync_templates()          # a Steam update may have wiped the layouts DeckDrop offers as templates
     except Exception as e:  # noqa: BLE001
         log(f"layout templates: {e}")
+    try:
+        sweep_stages()            # new versions unpacked before a restart and never applied
+    except Exception as e:  # noqa: BLE001
+        log(f"update stages: {e}")
     threading.Thread(target=pending_loop, name=PENDING_THREAD, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True

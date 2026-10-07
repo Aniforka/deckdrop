@@ -306,6 +306,9 @@ def delete_game(path, remove_shortcut=False):
         elif appids:
             notes.append(tr("delete.shortcut_kept"))
     shutil.rmtree(p)
+    from .gameupdate import backup_dir, forget
+    forget(p)
+    shutil.rmtree(backup_dir(p), ignore_errors=True)
     inbox = p.parent / "_inbox"
     if inbox.is_dir():
         for f in inbox.iterdir():

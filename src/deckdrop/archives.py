@@ -134,6 +134,9 @@ def try_extract(path, target, password):
 
 def finish(job, path, password=None):
     """Post-download: unpack archives (with remembered passwords), locate game dir."""
+    if job.update:
+        from .gameupdate import stage_update      # imported here: it builds on this module
+        return stage_update(job, path, password)
     try:
         if not (AUTO_EXTRACT and archive_volume(path.name) == "primary"):
             job.status = "done"

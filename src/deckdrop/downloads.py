@@ -60,12 +60,17 @@ def run_download(job, url):
         drop_part(part)
 
 
-def start_download(url, disk=None):
+def start_download(url, disk=None, update=None, root=None):
+    """Download a link into the inbox. With `update` ({game, exe, title}) it is a new version of
+    that game: it lands on the game's disk and waits on the game page instead of becoming a game."""
     url = url.strip()
     if not re.match(r"^https?://", url, re.I):
         raise ValueError(tr("err.need_url"))
     link = mega_parse_link(url)         # Mega is encrypted and has its own downloader
-    job = new_job("download", url, root_for(disk) if disk else None)
+    if update and link and link["kind"] == "folder" and not link.get("node"):
+        raise ValueError(tr("gup.mega_folder"))
+    job = new_job("download", url, root or (root_for(disk) if disk else None))
+    job.update = update
     threading.Thread(target=carry(run_mega_download if link else run_download),
                      args=(job, link or url), daemon=True).start()
     return job

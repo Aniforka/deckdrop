@@ -144,3 +144,4 @@ label.chk input{width:18px;height:18px;accent-color:var(--accent);flex:none}
 .perf-tab td{padding:6px 0;border-top:1px solid #ffffff0d;vertical-align:top}.perf-tab td:first-child{color:var(--muted);padding-right:12px;width:45%}
 body.selecting>.wrap{padding-bottom:120px}
 @media (max-width:560px){#selbar #sdl,#selbar #sdel{flex:1}}
+.updbox{margin-top:12px;padding:12px 14px;border:1px solid #4cc2ff44;border-radius:12px;background:#4cc2ff0d}.updbox .hint{margin-top:6px}.updbox .btns{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}

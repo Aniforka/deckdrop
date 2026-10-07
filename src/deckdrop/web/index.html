@@ -19,6 +19,11 @@
  <div class="row" style="margin-top:14px"><button class="ghost sm" id="gpBack">{{game.back}}</button></div>
  <div class="card" id="gpHead"></div>
  <div class="card"><h2>{{game.launch}}</h2><div class="hint" style="margin-bottom:4px">{{game.launch_hint}}</div><div id="gpExes"></div></div>
+ <div class="card" id="gpUpdCard" hidden><h2>{{gup.title}} <span class="acts"><button class="ghost sm" id="gpUpdFile">{{gup.from_device}}</button></span></h2>
+  <div class="hint">{{gup.hint}}</div>
+  <div class="row" style="margin-top:8px"><input id="gpUpdUrl" type="text" inputmode="url" placeholder="{{gup.url_placeholder}}" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="sm" id="gpUpdGo">{{gup.download}}</button></div>
+  <div id="gpUpdJob"></div><div id="gpUpd" style="margin-top:10px"></div>
+ </div>
  <div class="card" id="gpCoversCard" hidden><h2>{{covers.title}} <span class="acts"><button class="ghost sm" id="gpVndb">VNDB…</button><button class="ghost sm" id="gpIcon">{{covers.from_icon}}</button></span></h2><div class="hint" id="gpCvHint"></div><div class="covers" id="gpCovers"></div></div>
  <div class="card" id="gpSavesCard" hidden><h2>{{saves.title}} <span class="acts"><a id="gpSvDl"><button class="ghost sm" id="gpSvDlB">{{saves.download}}</button></a><button class="ghost sm" id="gpSvImp">{{saves.import}}</button></span></h2><div class="hint" id="gpSaves"></div></div>
  <div class="card" id="gpFilesCard" hidden><h2>{{files.title}} <span class="acts"><button class="ghost sm" id="gpFArch">{{files.unpack}}</button><button class="ghost sm" id="gpFUp">{{files.upload}}</button></span></h2>

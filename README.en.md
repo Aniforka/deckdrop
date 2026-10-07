@@ -93,6 +93,7 @@ That's it. DeckDrop starts by itself every time the Deck boots and keeps working
   - [Downloading and unpacking](#downloading-and-unpacking)
   - [Adding a game you already have](#adding-a-game-you-already-have)
   - [Game page](#game-page)
+  - [Updating a game](#updating-a-game)
   - [Game files and patches](#game-files-and-patches)
 - [Artwork](#artwork)
 - [Saves](#saves)
@@ -351,6 +352,31 @@ DeckDrop copies and moves nothing: the folder stays where it is and shows up in 
 - **Actions**: hide from the list, delete from the Deck with the PIN (a check box removes the
   Steam shortcut too).
 - **Details**: folder, size, name in Steam, AppID, Proton, artwork source.
+
+### Updating a game
+
+The "Update the game" card on the game page takes a new version of it: paste a link (direct,
+Mega file, Yandex Disk, Google Drive) or pick its file on your phone or PC. The new version is
+unpacked aside on the Deck first, and nothing in the game changes until you have seen what the
+update will do and pressed "update":
+
+- how many files are new and how many are replaced (with the list);
+- which executable Steam will start. The game keeps its folder, so its Steam shortcut and app
+  id stay, and with them the name, Proton, artwork, controller layout and the **Proton prefix,
+  where most games keep saves and settings**. If the new version renamed the exe
+  (`Game-1.2.exe` → `Game-1.3.exe`), the same shortcut is pointed at the new one;
+- save folders inside the game (`saves`, `savedata`, `Saved`, ...) are never overwritten, even
+  if the new version ships files there;
+- your settings files (`*.ini`, `*.cfg`, `config.json`, ...) are kept unless you untick it;
+- files of the old version the new one does not have stay, unless you tick "clear" (saves stay
+  even then).
+
+It lines the archive up with the game by the exe's path, so an archive with an extra folder
+level (`Game-1.3-pc/…`) lands right. While the game is running, the update waits.
+
+Every file the update replaced or cleared is moved aside, not deleted, so **the last update can
+be rolled back** with one button; saves made since then stay. "Delete the old files" frees that
+space. The copies live in `.deckdrop-updates/` next to the game folder.
 
 ### Game files and patches
 

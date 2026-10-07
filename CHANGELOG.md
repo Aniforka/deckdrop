@@ -6,6 +6,36 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.6.0 — 2026-10-07
+
+### English
+
+**Added**
+- **Update a game** from its page: a link to the new version or its file from your phone or PC.
+  It is unpacked aside, and the page shows what the update will do before anything changes: new
+  and replaced files, which exe Steam will start, which of your files stay. Then "update".
+- The game keeps its folder and its Steam shortcut, so the Proton prefix with saves and settings,
+  the name, Proton, artwork and controller layout stay. A renamed exe gets the same shortcut.
+- Save folders in the game are never overwritten, your settings files (`*.ini`, `*.cfg`, ...)
+  are kept unless you say otherwise, and old files stay unless you ask to clear them.
+- The last update can be rolled back: what it replaced or cleared is kept aside, not deleted.
+  An update waits while the game is running.
+
+### Русский
+
+**Добавлено**
+- **Обновление игры** со страницы игры: ссылка на новую версию или её файл с телефона или ПК.
+  Она распаковывается в сторонку, и страница показывает, что сделает обновление, до того как
+  что-то изменится: новые и заменяемые файлы, какой exe будет запускать Steam, какие твои файлы
+  останутся. Потом «обновить».
+- Игра остаётся в своей папке и со своим ярлыком Steam, поэтому префикс Proton с сейвами
+  и настройками, название, Proton, обложки и раскладка сохраняются. Переименованный exe получает
+  тот же ярлык.
+- Папки сейвов в игре никогда не перезаписываются, файлы настроек (`*.ini`, `*.cfg`…) остаются,
+  если не сказать иначе, а старые файлы остаются, если не попросить их убрать.
+- Последнее обновление можно откатить: то, что оно заменило или убрало, лежит в сторонке, а не
+  удалено. Пока игра запущена, обновление ждёт.
+
 ## 0.5.1 — 2026-10-06
 
 ### English
