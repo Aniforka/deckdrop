@@ -6,6 +6,42 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.7.0 — 2026-10-29
+
+### English
+
+**Added**
+- **A whole game folder from your PC**: "Add" has a folder picker, and a folder can be dropped
+  onto the page. The browser sends it file by file; DeckDrop keeps the tree, moves the folder next
+  to your games and, when the settings ask for it, adds it to Steam.
+- **Torrents**: a magnet link or a link to a `.torrent` file is handed to the qBittorrent already
+  running on the Deck. DeckDrop follows the progress, takes the finished game away from the client
+  (the files stay) and finishes with it like any other download.
+- Settings → Torrents: the qBittorrent Web UI address (the usual ports are tried while it is
+  empty), the user and password (kept behind the PIN), "check the connection", and "add a game that
+  arrived as a folder or a torrent to Steam right away".
+- Both new ways end like a download: a single archive in the folder is unpacked, a nested
+  `Games/Foo/Foo.exe` folder is flattened, and an installer (`setup.exe`) is not added to Steam.
+- An upload shows its speed, and a finished folder shows the "importing" stage while it becomes
+  a game.
+
+### Русский
+
+**Добавлено**
+- **Целая папка игры с ПК**: в «Добавить» появился выбор папки, а папку можно перетащить на
+  страницу. Браузер шлёт её файл за файлом; DeckDrop сохраняет структуру, переносит папку
+  к остальным играм и, если так просят настройки, добавляет её в Steam.
+- **Торренты**: magnet-ссылка или ссылка на файл `.torrent` уходит в qBittorrent, который уже
+  работает на деке. DeckDrop следит за загрузкой, забирает готовую игру у клиента (сами файлы
+  остаются) и доводит её до конца как любое другое скачивание.
+- Настройки → «Торренты»: адрес Web UI qBittorrent (пока пуст — ищем на обычных портах),
+  пользователь и пароль (под PIN), «проверить связь» и «сразу добавлять в Steam игру, пришедшую
+  папкой или торрентом».
+- Оба новых способа заканчиваются как скачивание: единственный архив в папке распаковывается,
+  вложенная папка `Games/Foo/Foo.exe` разворачивается, а установщик (`setup.exe`) в Steam не
+  добавляется.
+- У загрузки видно скорость, а готовая папка показывает стадию «разбираю», пока становится игрой.
+
 ## 0.6.0 — 2026-10-07
 
 ### English

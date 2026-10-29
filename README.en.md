@@ -27,6 +27,8 @@ same Wi-Fi, and from the couch you can:
 
 - **download a game from a link**: direct links, Mega (decrypted right on the Deck),
   Yandex Disk, Google Drive, or just send a file from your phone or PC;
+- **send a game you already have as a whole folder** from your PC, or **hand a magnet link to the
+  qBittorrent on the Deck**: it arrives next to your games and goes into Steam;
 - **unpack archives**: zip, 7z, rar, multi-volume, password-protected (asked once, remembered);
 - **add it to Steam** under a proper name, with your default Proton and **all five kinds of
   artwork**: from VNDB for visual novels, or drawn from the exe icon;
@@ -92,6 +94,7 @@ That's it. DeckDrop starts by itself every time the Deck boots and keeps working
 - [Games](#games)
   - [Downloading and unpacking](#downloading-and-unpacking)
   - [Adding a game you already have](#adding-a-game-you-already-have)
+  - [Torrents](#torrents)
   - [Game page](#game-page)
   - [Updating a game](#updating-a-game)
   - [Game files and patches](#game-files-and-patches)
@@ -306,6 +309,11 @@ artwork, select a [controller layout](#controller-layouts) or remove the shortcu
 - Paste a link into the field, press Ctrl+V anywhere on the page, or drag a file or link onto
   it. Next to the title you pick the disk (internal or microSD) with its free space; the
   choice is remembered.
+- A **whole game folder from a PC**: "choose a folder" in "Add", or drag the folder onto the page.
+  The browser sends it file by file, DeckDrop keeps the structure, and the folder is moved in as
+  a game; a single archive inside is unpacked as usual.
+- A magnet link or a link to a `.torrent` file goes to the qBittorrent on the Deck, see
+  [Torrents](#torrents).
 - Archives (zip, 7z, rar, tar.\*) are unpacked into `<disk>/Games/<archive name>`; a `(1)`
   tail from a repeated download on a PC is dropped from the folder name.
 - An encrypted archive stops with "password needed" and a password field right in the task.
@@ -334,6 +342,22 @@ DeckDrop copies and moves nothing: the folder stays where it is and shows up in 
 - Games can be added from the home folder and from mounted drives.
 - "Remove from DeckDrop" only removes the card. "Delete from Deck 🔒" deletes the files, with
   the PIN.
+
+### Torrents
+
+DeckDrop does not download torrents itself: it hands a magnet link or a `.torrent` file to the
+**qBittorrent already running on the Deck** (its Web UI has to be enabled) and watches the
+download there. The finished game is taken away from the client — the files stay — and then it is
+unpacked or moved in like any other download.
+
+- Settings → Torrents: the Web UI address (`http://127.0.0.1:8080` by default; if Steam already
+  uses 8080 for its own CEF port, set 8081), the user and password, "check the connection", and
+  "add a game that arrived as a folder or a torrent to Steam right away".
+- The password is kept behind the PIN: the page only shows whether one is saved.
+- Paste a magnet link into "Add", or drop or paste a link to a `.torrent` file. The disk chosen
+  next to the title decides where the files land.
+- Cancel stops following the torrent and removes it from qBittorrent together with what it had
+  downloaded.
 
 ### Game page
 
@@ -484,6 +508,7 @@ much, and offers "download" (one zip, or separate files) and "delete 🔒" (one 
 | Yandex Disk (`disk.yandex.*`, `yadi.sk`) | the direct link comes from Disk's public API |
 | Google Drive | via `drive.usercontent.google.com` |
 | Mega (`mega.nz`, `mega.co.nz`) | files and folders, new and old links; decrypted on the Deck |
+| A magnet link or a `.torrent` link | given to the qBittorrent on the Deck, see [Torrents](#torrents) |
 | Telegram | there is no file link: download on your phone and upload the file |
 | A page with a button (itch.io, file hosts with a timer) | an HTML page arrives instead of a file, and DeckDrop says so |
 
@@ -535,7 +560,7 @@ Settings has a proxy used **by DeckDrop only**; the rest of the Deck goes online
 
 Open them with the tab or the ⚙ in the header; every switch saves immediately. They cover the
 interface language, the default Proton for new games, preferring Linux builds, Steam control,
-saved [controller layouts](#controller-layouts) and the layout for new games, automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, the Mega
+saved [controller layouts](#controller-layouts) and the layout for new games, automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, [torrents](#torrents), the Mega
 checksum check, archive passwords, the update link, changing the PIN, and disk and address
 details.
 

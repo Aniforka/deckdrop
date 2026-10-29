@@ -44,7 +44,10 @@ addEventListener('scroll',()=>{const y=scrollY;if(!mobile.matches){hdr.classList
 $('#addr').onclick=()=>{const u=lastState&&lastState.urls[0];if(!u)return;if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(u).then(()=>toast(t('toast.address_copied'),'ok'),()=>toast(u));else toast(u);};
 // ---- downloads / uploads
 const diskSel=()=>$('#disk').value||undefined;
-function download(u){u=(u||$('#url').value).trim();if(!isUrl(u)){toast(t('err.need_url'),'err');return;}$('#url').value='';
+const isTorrent=u=>/^magnet:/i.test(u)||/^https?:\/\/\S*\.torrent([?#]|$)/i.test(u);
+function download(u){u=(u||$('#url').value).trim();
+ if(isTorrent(u)){$('#url').value='';api('/api/torrent',{url:u,disk:diskSel()}).then(j=>{if(j&&j.id)toast(t('toast.torrent',{name:j.label}),'ok');});return;}
+ if(!isUrl(u)){toast(t('err.need_url'),'err');return;}$('#url').value='';
  if(isMegaFolder(u)){megaPick(u);return;}api('/api/download',{url:u,disk:diskSel()});}
 const MEGA_RE=/^https?:\/\/(?:www\.)?mega(?:\.co)?\.nz\//i;
 function isMegaFolder(u){if(!MEGA_RE.test(u))return false;const h=u.split('#')[1]||'';return /\/folder\//i.test(u.split('#')[0])||/^F!/.test(h);}
@@ -73,12 +76,51 @@ $('#toggleHidden').onclick=()=>{showHidden=!showHidden;render(lastState);};
 $('#disk').onchange=()=>api('/api/settings',{default_disk:$('#disk').value});
 function upload(f){const x=new XMLHttpRequest();x.open('PUT','/api/upload/'+encodeURIComponent(f.name)+(diskSel()?'?disk='+encodeURIComponent(diskSel()):''));x.onerror=()=>toast(t('err.upload_named',{name:f.name}),'err');x.onload=refresh;x.send(f);setTimeout(refresh,300);}
 $('#file').onchange=e=>{[...e.target.files].forEach(upload);e.target.value='';};
+// ---- a whole game folder from the PC: the server keeps the tree, the page sends file by file
+function treeItems(items){return [...items].map(it=>{const f=it.file||it,rel=it.rel||f.webkitRelativePath||f.name,parts=rel.split('/');
+ return {file:f,root:parts.length>1?parts[0]:'game',rel:parts.length>1?parts.slice(1).join('/'):rel};});}
+async function uploadTree(files){
+ const byRoot=new Map();for(const it of treeItems(files)){if(!byRoot.has(it.root))byRoot.set(it.root,[]);byRoot.get(it.root).push(it);}
+ for(const [name,items] of byRoot)await uploadTreeOne(name,items);}
+async function uploadTreeOne(name,items){
+ if(!items.length)return;
+ const total=items.reduce((a,i)=>a+(i.file.size||0),0);
+ const b=await api('/api/upload/tree/begin',{name,disk:diskSel(),total,files:items.length});
+ if(!b||!b.id)return;
+ toast(t('toast.uploading_folder',{name}),'ok');
+ let failed=null;const queue=items.slice();
+ const worker=async()=>{while(!failed&&queue.length){const it=queue.shift();try{await putTreeFile(b.id,it.rel,it.file);}catch(e){failed=e;}}};
+ await Promise.all([worker(),worker(),worker()]);
+ if(failed){await api('/api/upload/tree/abort',{job:b.id});toast(String(failed.message||failed),'err');return;}
+ await api('/api/upload/tree/done',{job:b.id});refresh();}
+function putTreeFile(job,rel,file,tries){return new Promise((res,rej)=>{
+ const send=n=>{const xh=new XMLHttpRequest();
+  xh.open('PUT','/api/upload/tree?job='+job+'&path='+encodeURIComponent(rel));
+  xh.onload=()=>{if(xh.status===200)return res();let j={};try{j=JSON.parse(xh.responseText);}catch(e){}
+   if(n>1)return send(n-1);rej(new Error(j.error||t('err.upload_named',{name:rel})));};
+  xh.onerror=()=>{if(n>1)return send(n-1);rej(new Error(t('err.upload_named',{name:rel})));};
+  xh.send(file);};
+ send(tries||2);});}
+$('#dir').onchange=e=>{const fs=[...e.target.files];e.target.value='';if(fs.length)uploadTree(fs);};
+async function collectEntries(entries){
+ const out=[];
+ async function walk(entry,prefix){
+  if(entry.isFile){const f=await new Promise((res,rej)=>entry.file(res,rej));out.push({file:f,rel:prefix+entry.name});return;}
+  if(!entry.isDirectory)return;
+  const reader=entry.createReader();
+  for(;;){const batch=await new Promise((res,rej)=>reader.readEntries(res,rej));if(!batch.length)break;
+   for(const en of batch)await walk(en,prefix+entry.name+'/');}}
+ for(const en of entries)await walk(en,'');
+ return out;}
 const d=$('#drop');
 ['dragenter','dragover'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add('over');}));
 ['dragleave','drop'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove('over');}));
-d.addEventListener('drop',e=>{if(e.dataTransfer.files.length){[...e.dataTransfer.files].forEach(upload);return;}
- const u=(e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain')||'').split('\n')[0].trim();if(isUrl(u))download(u);});
-document.addEventListener('paste',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))return;const u=(e.clipboardData.getData('text')||'').trim();if(isUrl(u))download(u);});
+d.addEventListener('drop',e=>{
+ const entries=[...e.dataTransfer.items].filter(i=>i.kind==='file').map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(Boolean);
+ if(entries.some(en=>en.isDirectory)){collectEntries(entries).then(list=>{if(list.length)uploadTree(list);});return;}
+ if(e.dataTransfer.files.length){[...e.dataTransfer.files].forEach(upload);return;}
+ const u=(e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain')||'').split('\n')[0].trim();if(isUrl(u)||isTorrent(u))download(u);});
+document.addEventListener('paste',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))return;const u=(e.clipboardData.getData('text')||'').trim();if(isUrl(u)||isTorrent(u))download(u);});
 // ---- game actions (event delegation; lists re-render only when their data changes)
 document.addEventListener('change',e=>{const el=e.target;if(el.dataset.compat!==undefined)api('/api/game/compat',{game:el.dataset.game,exe:el.dataset.exe,tool:el.value}).then(j=>{if(j.ok)toast(j.note,'ok');});});
 document.addEventListener('click',async e=>{const card=e.target.closest('[data-open]');if(card&&!e.target.closest('button,select,input,a')){openGame(card.dataset.open);return;}
@@ -127,9 +169,10 @@ function renderList(s){lastJobs=s.jobs||[];
   $('#games').innerHTML=s.games.filter(g=>showHidden||!g.hidden).map(listCard).join('')||`<div class="empty">${t('games.empty')}</div>`;}}
 function jobItem(j){const act=j.status==='downloading'||j.status==='uploading';const pct=j.total?Math.round(j.done*100/j.total):0;
   let st=L['status.'+j.status]?t('status.'+j.status):j.status;if(act)st+=' · '+fmt(j.done)+(j.total?' / '+fmt(j.total)+' · '+pct+'%':'')+(j.speed?' · '+t('unit.per_sec',{size:fmt(j.speed)}):'');
-  const cls=j.status==='error'?'err':j.status==='done'||j.status==='update_ready'?'ok':j.status==='cancelled'?'':'busy';const can=j.kind==='download'&&CANCELLABLE.includes(j.status);
+  const cls=j.status==='error'?'err':j.status==='done'||j.status==='update_ready'?'ok':j.status==='cancelled'?'':'busy';const can=(j.kind==='download'||j.kind==='torrent')&&CANCELLABLE.includes(j.status);
   return `<div class="item"><div class="top"><b>${esc(j.label)}</b><span class="acts">${j.update?`<span class="pill acc">${t('jobs.update_of',{name:esc(j.update)})}</span>`:''}<span class="pill k">${esc(j.disk||'')}</span>${can?`<button class="ghost sm" data-cancel="${j.id}">${t('jobs.cancel')}</button>`:''}${j.status==='update_ready'&&view.kind!=='game'?`<button class="sm" data-opengame="${esc(j.game_dir)}">${t('jobs.open_game')}</button>`:''}</span></div>`
    +(act?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')+`<div class="st ${cls}">${esc(st)}${j.error?' — '+esc(j.error):''}</div>`
+   +(j.note&&j.status==='done'?`<div class="path">${esc(j.note)}</div>`:'')
    +(j.status==='needs_password'?`<div class="row wrap" style="margin-top:8px"><input type="password" placeholder="${t('jobs.archive_password')}" style="flex:1;min-width:140px;padding:8px 12px;font-size:.95em"><label class="small muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked>${t('jobs.remember')}</label><button class="sm" data-pwgo="${j.id}">${t('jobs.unpack')}</button></div>`:'')
    +(j.game_dir?`<div class="path">→ ${esc(j.game_dir)}</div>`:j.status==='done'&&j.file?`<div class="path">→ ${esc(j.file)}</div>`:'')+'</div>';}
 function renderGame(s){const g=(s.games||[]).find(x=>x.path===view.path);
@@ -395,6 +438,10 @@ function fillSettings(){const s=lastState;if(!s)return;const st=s.settings||{},c
  $('#sLinux').checked=!!st.prefer_linux;$('#sCef').checked=!!st.cef_enabled;$('#sVndb').checked=!!st.vndb_auto;$('#sSafe').checked=!st.vndb_nsfw;
  if(document.activeElement!==$('#sPw'))$('#sPw').value=(st.archive_passwords||[]).join(', ');if(document.activeElement!==$('#sUpd'))$('#sUpd').value=st.update_url||'';
  $('#sProxyView').textContent=st.proxy_masked||t('proxy.not_set');$('#sProxyDl').checked=!!st.proxy_downloads;$('#sMega').checked=!!st.mega_verify;
+ if(document.activeElement!==$('#sTorUrl'))$('#sTorUrl').value=st.torrent_url||'';
+ if(document.activeElement!==$('#sTorUser'))$('#sTorUser').value=st.torrent_user||'';
+ $('#sAutoAdd').checked=st.auto_add_steam!==false;
+ $('#sTorPass').placeholder=st.torrent_pass_set?t('torrent.pass_saved'):t('torrent.pass_hint');
  $('#sInfo').innerHTML=`DeckDrop v${esc(s.version)} · ${s.ffmpeg?t('ffmpeg.found'):t('ffmpeg.missing')}<br>${(s.urls||[]).map(esc).join(' · ')}<br>`+(s.disks||[]).map(d=>`${esc(d.label)}: ${t('disk.free_of',{free:fmt(d.free),total:fmt(d.total)})} · <code>${esc(d.root)}</code>`).join('<br>')+(s.pending?'<br>'+t('info.pending_n',{n:s.pending}):'');fillLang();}
 document.querySelectorAll('#pgSettings [data-set]').forEach(el=>el.addEventListener('change',async()=>{const k=el.dataset.set;let v=el.type==='checkbox'?el.checked:el.value;if(el.dataset.invert)v=!v;
  if(k==='archive_passwords')v=v.split(',').map(x=>x.trim()).filter(Boolean);const j=await api('/api/settings',{[k]:v});if(j.ok){toast(t('toast.saved'),'ok');lastState.settings=j.settings;lastState.cdp=j.cdp;fillSettings();}}));
@@ -408,6 +455,11 @@ $('#sTest').onclick=async()=>{const b=$('#sTest');b.disabled=true;b.textContent=
    +j.checks.map(c=>`${c.ok?'✅':'❌'} ${esc(c.host)} ${esc(c.mode)}: ${c.ok?(t('unit.ms',{n:c.ms})+(c.note?' · '+esc(c.note):'')):esc(c.error)}`).join('<br>');
   }catch(e){$('#sTestRes').textContent=t('proxy.test_failed');}
  b.disabled=false;b.textContent=t('set.net.test');};
+$('#sTorTest').onclick=async()=>{const b=$('#sTorTest');b.disabled=true;b.textContent=t('common.checking');$('#sTorTestRes').textContent='';
+ try{const j=await api('/api/torrent/probe',{});
+  $('#sTorTestRes').textContent=j.ok?t('torrent.check_ok',{version:j.version,url:j.url}):t('torrent.check_bad',{error:j.error||''});
+ }catch(e){$('#sTorTestRes').textContent=t('torrent.check_bad',{error:e});}
+ b.disabled=false;b.textContent=t('torrent.test');};
 $('#sPinGo').onclick=async()=>{const j=await api('/api/settings/pin',{old:$('#sPinOld').value,new:$('#sPinNew').value});if(j.ok){toast(t('pin.changed'),'ok');$('#sPinOld').value=$('#sPinNew').value='';}};
 // ---- performance: the self-check and the measurements run on the Deck, the page only shows them
 let perfReport='';

@@ -10,7 +10,7 @@
 <div id="gameList">
  <div class="card"><h2>{{add.title}} <select class="sel" id="disk" title="{{add.disk}}"></select></h2>
   <div class="row"><input id="url" type="text" placeholder="{{add.url_placeholder}}" autocomplete="off"><button id="go">{{add.download}}</button></div>
-  <div class="drop" id="drop"><div class="ic">⤓</div>{{add.drop}}<br><label>{{add.pick_files}}<input id="file" type="file" multiple></label></div>
+  <div class="drop" id="drop"><div class="ic">⤓</div>{{add.drop}}<br><label>{{add.pick_files}}<input id="file" type="file" multiple></label><span class="muted"> · </span><label>{{add.pick_folder}}<input id="dir" type="file" webkitdirectory multiple></label></div>
  </div>
  <div class="card"><h2>{{jobs.title}} <span class="acts"><button class="danger sm" id="stopAll" hidden>{{jobs.stop_all}}</button><button class="ghost sm" id="clear">{{jobs.clear}}</button></span></h2><div id="jobs"></div></div>
  <div class="card"><h2>{{games.title}} <span class="acts"><button class="ghost sm" id="importGame">{{games.import}}</button><button class="ghost sm" id="toggleHidden"></button></span></h2><div id="games"></div></div>
@@ -78,6 +78,16 @@
   <label class="chk"><input type="checkbox" id="sProxyDl" data-set="proxy_downloads">{{set.net.proxy_downloads}}</label>
   <div class="row"><button class="ghost sm" id="sTest">{{set.net.test}}</button></div>
   <div class="hint" id="sTestRes"></div>
+ </div>
+ <div class="card"><h2>{{torrent.title}}</h2>
+  <div class="hint">{{torrent.hint}}</div>
+  <div class="frow"><label for="sTorUrl">{{torrent.url}}</label><input id="sTorUrl" type="text" data-set="torrent_url" placeholder="http://127.0.0.1:8080" autocomplete="off" autocapitalize="off" spellcheck="false">
+   <div class="hint" style="margin-top:6px">{{torrent.url_hint}}</div></div>
+  <div class="frow"><label for="sTorUser">{{torrent.user}}</label><input id="sTorUser" type="text" data-set="torrent_user" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="frow"><label for="sTorPass">{{torrent.pass}}</label><input id="sTorPass" type="password" data-set="torrent_pass" placeholder="{{torrent.pass_hint}}" autocomplete="new-password"></div>
+  <label class="chk"><input type="checkbox" id="sAutoAdd" data-set="auto_add_steam">{{torrent.auto_add}}</label>
+  <div class="row"><button class="ghost sm" id="sTorTest">{{torrent.test}}</button></div>
+  <div class="hint" id="sTorTestRes"></div>
  </div>
  <div class="card"><h2>Mega</h2>
   <div class="hint">{{set.mega.hint_html}}</div>

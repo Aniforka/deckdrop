@@ -45,8 +45,8 @@ from ..patches import (
 from ..paths import reserve_path, safe_name
 from ..saves import build_saves_zip, import_saves_zip, saves_info
 from ..state import (
-    MEDIA_TOKENS, PROTECTED_KEYS, SETTING_KEYS, STATE, check_pin, media_login, media_token_ok,
-    pw_hash, set_state,
+    MEDIA_TOKENS, PROTECTED_KEYS, SECRET_KEYS, SETTING_KEYS, STATE, check_pin, media_login,
+    media_token_ok, pw_hash, set_state,
 )
 from ..steam.cdp import CDP
 from ..steam.compat import compat_tools
@@ -56,7 +56,14 @@ from ..steam.layouts import (
 )
 from ..steam.shortcuts import rename_shortcut, set_compat_for
 from ..storage import disks, root_for
+from ..torrent import cancel as torrent_cancel
+from ..torrent import probe as torrent_probe
+from ..torrent import start as start_torrent
 from ..update import self_update
+from ..uploads import abort as upload_abort
+from ..uploads import begin as upload_begin
+from ..uploads import finish_tree as upload_finish
+from ..uploads import save_file as upload_file
 from .page import render
 
 
@@ -86,9 +93,10 @@ def state_payload():
 
 def public_settings():
     """Settings for the page: protected values are replaced by a masked preview."""
-    out = {k: STATE.get(k) for k in SETTING_KEYS if k not in PROTECTED_KEYS}
+    out = {k: STATE.get(k) for k in SETTING_KEYS if k not in SECRET_KEYS}
     out["proxy_masked"] = mask_proxy(STATE.get("proxy"))
     out["proxy_set"] = bool((STATE.get("proxy") or "").strip())
+    out["torrent_pass_set"] = bool(STATE.get("torrent_pass"))
     return out
 
 
@@ -344,6 +352,18 @@ class Handler(BaseHTTPRequestHandler):
             s = lambda k, d="": str(body.get(k, d) or d)  # noqa: E731
             if path == "/api/download":
                 self.send_json(start_download(s("url"), s("disk") or None).to_dict())
+            elif path == "/api/torrent":
+                self.send_json(start_torrent(s("url"), s("disk") or None).to_dict())
+            elif path == "/api/torrent/probe":
+                self.send_json(torrent_probe())
+            elif path == "/api/upload/tree/begin":
+                job = upload_begin(s("name"), s("disk") or None,
+                                   int(body.get("total") or 0), int(body.get("files") or 0))
+                self.send_json(job.to_dict())
+            elif path == "/api/upload/tree/done":
+                self.send_json(upload_finish(int(body.get("job") or 0)).to_dict())
+            elif path == "/api/upload/tree/abort":
+                self.send_json({"ok": upload_abort(int(body.get("job") or 0), s("reason"))})
             elif path == "/api/mega/list":
                 self.send_json({"ok": True, **mega_probe(s("url"))})
             elif path == "/api/mega/download":
@@ -374,7 +394,8 @@ class Handler(BaseHTTPRequestHandler):
                 _patch_drop(s("token"))
                 self.send_json({"ok": True})
             elif path == "/api/cancel":
-                self.send_json({"ok": cancel_job(int(body.get("id", 0) or 0))})
+                jid = int(body.get("id", 0) or 0)
+                self.send_json({"ok": cancel_job(jid) or torrent_cancel(jid)})
             elif path == "/api/cancel_all":
                 self.send_json({"ok": True, "stopped": cancel_all()})
             elif path == "/api/inbox/clear":
@@ -464,12 +485,14 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     v = body[k]
                     if k in ("prefer_linux", "vndb_auto", "vndb_nsfw", "cef_enabled",
-                             "proxy_downloads", "mega_verify"):
+                             "proxy_downloads", "mega_verify", "auto_add_steam"):
                         v = v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "on", "yes")
                     elif k == "archive_passwords":
                         v = [str(x).strip() for x in (v if isinstance(v, list) else str(v).splitlines()) if str(x).strip()]
                     else:
                         v = str(v or "").strip()
+                    if k == "torrent_pass" and not v:
+                        continue          # an empty field means "keep the saved password"
                     changes[k] = v
                 if changes:
                     set_state(**changes)
@@ -511,7 +534,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         path, q = self.query()
         try:
-            if path.startswith("/api/upload/"):
+            if path == "/api/upload/tree":
+                dest = upload_file(int(self.q1(q, "job") or 0), self.q1(q, "path"), self.read_body_to)
+                self.send_json({"ok": True, "size": dest.stat().st_size})
+            elif path.startswith("/api/upload/"):
                 name = safe_name(path[len("/api/upload/"):])
                 job = new_job("upload", name, root_for(self.q1(q, "disk")) if self.q1(q, "disk") else None)
                 job.total = int(self.headers.get("Content-Length") or 0)

@@ -9,6 +9,12 @@ visual novels, or built from the exe icon. Extra tabs: archives, and a
 password-protected gallery of Steam screenshots and clips. Save games can be
 backed up to a zip and imported back.
 
+A game that is already downloaded on the PC can be sent as a whole folder (the
+browser uploads it file by file), and a magnet or .torrent link is given to the
+qBittorrent that is already running on the Deck: DeckDrop follows its progress and
+takes the finished game. Either way the folder is moved next to the other games
+and, when the settings ask for it, added to Steam at once.
+
 Steam is driven live through its CEF remote-debugging port (the same mechanism
 Decky Loader uses). DeckDrop enables it with a marker file; it becomes active
 after one Steam restart (a Deck reboot). Until then, name/Proton changes are
@@ -25,4 +31,4 @@ Env overrides: DECKDROP_PORT (8088), DECKDROP_GAMES (~/Games), DECKDROP_STATE (s
                DECKDROP_DISKS (extra roots "label=path;..."), DECKDROP_CEF=0 (no Steam control),
                DECKDROP_CEF_PORT (8080), DECKDROP_EXTRACT=0 (don't unpack), DECKDROP_KEEP=0
 """
-__version__ = "0.6.0"
+__version__ = "0.7.0"

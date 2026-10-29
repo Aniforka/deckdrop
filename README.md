@@ -19,13 +19,15 @@
 
 Paste a link or drop a file on your phone or PC, and the Deck downloads it (Mega included,
 decrypted on the Deck), unpacks it and adds the game to Steam with Proton and all five kinds
-of artwork. Your Deck's screenshots and recordings are just as easy to grab onto your phone or PC.
+of artwork. A whole game folder can be sent from your PC, and a magnet link can be handed to the
+qBittorrent on the Deck. Your Deck's screenshots and recordings are just as easy to grab onto your phone or PC.
 Plus controller layouts shared between games, patches, save backups and a built-in self-check.
 One Python file, nothing to install on stock SteamOS. English and Russian, following the Deck's Steam language.
 
 Вставляешь ссылку или кидаешь файл с телефона или ПК — дек скачивает его (Mega тоже,
 с расшифровкой прямо на деке), распаковывает и добавляет игру в Steam с Proton и всеми пятью
-видами обложек. А скриншоты и записи с дека так же просто забрать себе на телефон или ПК.
+видами обложек. Целую папку игры можно отправить с ПК, а magnet-ссылку — отдать qBittorrent
+на деке. А скриншоты и записи с дека так же просто забрать себе на телефон или ПК.
 Плюс раскладки контроллера, общие для всех игр, патчи, бэкапы сейвов и встроенная самопроверка. Один файл на Python,
 на стоковом SteamOS ничего доустанавливать не нужно. Русский и английский, по языку Steam на деке.
 

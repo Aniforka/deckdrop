@@ -69,6 +69,36 @@ def unique_dir(directory, name):
         i += 1
 
 
+def unique_file(directory, name):
+    """A path in `directory` that no file has yet (the name is kept when it is free)."""
+    stem, ext = split_ext(name)
+    directory.mkdir(parents=True, exist_ok=True)
+    with LOCK:
+        i = 1
+        while True:
+            cand = directory / (name if i == 1 else f"{stem} ({i}){ext}")
+            if not cand.exists():
+                return cand
+            i += 1
+
+
+def safe_rel(rel):
+    """A relative path from a browser folder upload, made harmless: no .., no absolute paths,
+    no Windows-reserved characters. Returns "" when nothing usable is left."""
+    rel = (rel or "").replace("\\", "/").lstrip("/")
+    parts = []
+    for p in rel.split("/"):
+        if p in ("", "."):
+            continue
+        # a drive letter is checked before the colon is replaced: "C:/x" is a path, not a name
+        if p == ".." or re.match(r"^[A-Za-z]:", p):
+            return ""
+        p = re.sub(r'[\x00-\x1f<>:"|?*]', "_", p).strip(" .")
+        if p:
+            parts.append(p)
+    return "/".join(parts)
+
+
 def filename_from_response(headers, url):
     cd = headers.get("Content-Disposition", "") or ""
     m = re.search(r"filename\*\s*=\s*([^']*)'[^']*'([^;]+)", cd)

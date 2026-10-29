@@ -32,11 +32,17 @@ STATE = {
     "mega_verify": True,          # check Mega's own checksum after a download
     "cef_enabled": CEF_ENABLED,
     "default_layout": "",         # id of the saved controller layout new games get; "" = Steam's own
+    "torrent_url": "",            # qBittorrent Web UI, e.g. http://127.0.0.1:8080; "" = find it
+    "torrent_user": "admin",
+    "torrent_pass": "",           # never sent to the page
+    "auto_add_steam": True,       # add a game that arrived as a folder or a torrent to Steam
 }
 SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "archive_passwords",
                 "default_disk", "cef_enabled", "update_url", "proxy", "proxy_downloads",
-                "mega_verify", "default_layout")
+                "mega_verify", "default_layout", "torrent_url", "torrent_user", "torrent_pass",
+                "auto_add_steam")
 PROTECTED_KEYS = ("proxy",)   # may carry credentials: PIN required to read or change
+SECRET_KEYS = ("proxy", "torrent_pass")   # never sent to the page
 
 
 def load_state():
