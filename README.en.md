@@ -27,9 +27,14 @@ same Wi-Fi, and from the couch you can:
 
 - **download a game from a link**: direct links, Mega (decrypted right on the Deck),
   Yandex Disk, Google Drive, or just send a file from your phone or PC;
+- **send a game you already have as a whole folder** from your PC, or **hand a magnet link to the
+  qBittorrent on the Deck**: it arrives next to your games and goes into Steam;
 - **unpack archives**: zip, 7z, rar, multi-volume, password-protected (asked once, remembered);
 - **add it to Steam** under a proper name, with your default Proton and **all five kinds of
-  artwork**: from VNDB for visual novels, or drawn from the exe icon;
+  artwork**: from VNDB for visual novels, from the Steam store for games that are on Steam,
+  from SteamGridDB with a free key, or drawn from the exe icon;
+- **move a game between the internal disk and a microSD** without losing its Steam shortcut,
+  saves prefix or artwork, and **see what takes the space** on every disk;
 - **drop a patch** straight into the game folder, or unpack a patch archive over the game after
   seeing exactly what it will replace;
 - **back up saves** to a zip and restore them;
@@ -92,14 +97,17 @@ That's it. DeckDrop starts by itself every time the Deck boots and keeps working
 - [Games](#games)
   - [Downloading and unpacking](#downloading-and-unpacking)
   - [Adding a game you already have](#adding-a-game-you-already-have)
+  - [Torrents](#torrents)
   - [Game page](#game-page)
   - [Updating a game](#updating-a-game)
   - [Game files and patches](#game-files-and-patches)
+  - [Moving a game](#moving-a-game)
 - [Artwork](#artwork)
 - [Saves](#saves)
 - [Controller layouts](#controller-layouts)
 - [Archives](#archives)
 - [Media](#media)
+- [Disks and space](#disks-and-space)
 - [Supported links](#supported-links)
 - [Mega](#mega)
 - [Network and proxy](#network-and-proxy)
@@ -306,6 +314,11 @@ artwork, select a [controller layout](#controller-layouts) or remove the shortcu
 - Paste a link into the field, press Ctrl+V anywhere on the page, or drag a file or link onto
   it. Next to the title you pick the disk (internal or microSD) with its free space; the
   choice is remembered.
+- A **whole game folder from a PC**: "choose a folder" in "Add", or drag the folder onto the page.
+  The browser sends it file by file, DeckDrop keeps the structure, and the folder is moved in as
+  a game; a single archive inside is unpacked as usual.
+- A magnet link or a link to a `.torrent` file goes to the qBittorrent on the Deck, see
+  [Torrents](#torrents).
 - Archives (zip, 7z, rar, tar.\*) are unpacked into `<disk>/Games/<archive name>`; a `(1)`
   tail from a repeated download on a PC is dropped from the folder name.
 - An encrypted archive stops with "password needed" and a password field right in the task.
@@ -335,11 +348,29 @@ DeckDrop copies and moves nothing: the folder stays where it is and shows up in 
 - "Remove from DeckDrop" only removes the card. "Delete from Deck 🔒" deletes the files, with
   the PIN.
 
+### Torrents
+
+DeckDrop does not download torrents itself: it hands a magnet link or a `.torrent` file to the
+**qBittorrent already running on the Deck** (its Web UI has to be enabled) and watches the
+download there. The finished game is taken away from the client — the files stay — and then it is
+unpacked or moved in like any other download.
+
+- Settings → Torrents: the Web UI address (`http://127.0.0.1:8080` by default; if Steam already
+  uses 8080 for its own CEF port, set 8081), the user and password, "check the connection", and
+  "add a game that arrived as a folder or a torrent to Steam right away".
+- The password is kept behind the PIN: the page only shows whether one is saved.
+- Paste a magnet link into "Add", or drop or paste a link to a `.torrent` file. The disk chosen
+  next to the title decides where the files land.
+- Cancel stops following the torrent and removes it from qBittorrent together with what it had
+  downloaded.
+
 ### Game page
 
 - **Launch**: every executable of the game. A Linux build (`.sh`, `.x86_64`) is recommended
   when there is one: it runs natively, without Proton. The added file has a check mark and a
-  Proton picker.
+  Proton picker. Executables are looked up in the game folder, one level down, and in Unreal's
+  `Binaries/Win64`, `Binaries/Win32` and `Binaries/Linux` folders, so games like Dragon Quest XI S
+  are recognized.
 - **Add to Steam**: the name comes from the exe without its extension, capitalized
   (`yosuga.exe` → "Yosuga"); for faceless `game.exe` or `start.exe`, from the folder name;
   versions like `v1.4`, tags in brackets and `(1)` are dropped. When there are several
@@ -398,6 +429,20 @@ and shows what is inside, where it goes, and how many files it adds and replaces
 is wrapped in one folder (`Patch v2/…`), a check box strips it. Replaced files are kept as
 `.bak` by default. Nothing changes until you confirm.
 
+### Moving a game
+
+The "Move…" button on the game page takes a game to another disk: the internal one or a microSD
+card. The folder is renamed on the same disk and copied file by file across disks, with progress
+and the free space checked first. The old folder goes away only after the copy is verified.
+
+The Steam shortcut is pointed at the new executable instead of being recreated, so the **AppID
+stays, and with it the Proton prefix with saves and settings, the name, artwork and controller
+layout**. Moving the update backup in `.deckdrop-updates/` along with the folder keeps the last
+update rollback working. While the game is running, or when it has a new version unpacked aside,
+the move is refused; a move inside Steam needs [Steam control](#steam-control), otherwise the
+shortcut would point at a folder that is gone. On the same disk the move is instant; across disks
+the game is unavailable until the copy finishes.
+
 ## Artwork
 
 Steam's slots: the 600×900 portrait capsule (seen in Big Picture), the 920×430 landscape one,
@@ -408,6 +453,14 @@ added.
   the portrait slot, a screenshot to landscape and hero, the logo is drawn as text, the icon
   comes from the exe. Automatic lookup is a setting and only fires on a confident title match.
   18+ images can be skipped with a check box in Settings.
+- **Steam store**: games that are on Steam get the portrait, hero, logo and wide image from the
+  Steam CDN, without any key. Only an exact title match is used, so a wrong game is not given
+  someone else's artwork.
+- **SteamGridDB** (optional): a free API key in Settings adds a 920×430 wide grid, transparent
+  logos and icons for games that are not on Steam. 18+ images follow the same check box.
+- In `auto`, the sources fill in this order: VNDB, the Steam store, SteamGridDB; a later one
+  only fills the slots the earlier ones left empty, and the exe icon is the last resort. The
+  **Auto** button on the artwork card runs that order for a game that is already in Steam.
 - **From the exe icon**: DeckDrop reads the PE resources itself and puts the icon on a
   background of its own color.
 - **Your own images**: any slot can take a PNG or JPEG from your phone or PC, or a specific
@@ -476,6 +529,19 @@ fine on iPhones too.
 switches to selecting; tap more tiles, or "all". The bar at the bottom shows how many and how
 much, and offers "download" (one zip, or separate files) and "delete 🔒" (one PIN for all of them).
 
+## Disks and space
+
+Settings → "Disks and space" (the "Show" button) measures the whole library on the Deck and
+splits every disk into **games, Proton prefixes, `_inbox` archives, update backups and the rest
+(Steam and the system)**. Games and prefixes are listed biggest first, with the game's folder,
+prefix and backup sizes, so it is easy to see what actually takes the space; the same game on
+two disks is marked as a likely copy.
+
+Sizes are measured in the background and cached, so the page does not walk the library on every
+poll; "Refresh" measures again. The panel only offers safe actions: open a game, delete an
+`_inbox` archive, drop an old update backup. A prefix is never deleted from here: saves and
+settings live in it.
+
 ## Supported links
 
 | Source | What happens |
@@ -484,6 +550,7 @@ much, and offers "download" (one zip, or separate files) and "delete 🔒" (one 
 | Yandex Disk (`disk.yandex.*`, `yadi.sk`) | the direct link comes from Disk's public API |
 | Google Drive | via `drive.usercontent.google.com` |
 | Mega (`mega.nz`, `mega.co.nz`) | files and folders, new and old links; decrypted on the Deck |
+| A magnet link or a `.torrent` link | given to the qBittorrent on the Deck, see [Torrents](#torrents) |
 | Telegram | there is no file link: download on your phone and upload the file |
 | A page with a button (itch.io, file hosts with a timer) | an HTML page arrives instead of a file, and DeckDrop says so |
 
@@ -535,9 +602,11 @@ Settings has a proxy used **by DeckDrop only**; the rest of the Deck goes online
 
 Open them with the tab or the ⚙ in the header; every switch saves immediately. They cover the
 interface language, the default Proton for new games, preferring Linux builds, Steam control,
-saved [controller layouts](#controller-layouts) and the layout for new games, automatic VNDB lookup and skipping 18+ images, the proxy and a connection test, the Mega
-checksum check, archive passwords, the update link, changing the PIN, and disk and address
-details.
+saved [controller layouts](#controller-layouts) and the layout for new games, automatic VNDB
+lookup and skipping 18+ images, **the Steam store and SteamGridDB artwork sources (the latter with
+an optional free key)**, the proxy and a connection test, [torrents](#torrents), the Mega checksum
+check, archive passwords, the update link, changing the PIN, **the [disk space report](#disks-and-space)**,
+and disk and address details.
 
 ### Performance
 

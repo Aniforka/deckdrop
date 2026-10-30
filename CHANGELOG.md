@@ -6,6 +6,124 @@ takes its description from its section, so a version cannot be released without 
 У каждой версии здесь свой раздел, на английском и на русском. Описание релиза на GitHub
 берётся из этого раздела, поэтому без него версия не выйдет.
 
+## 0.8.1 — 2026-10-30
+
+### English
+
+**Added**
+- **Unreal Engine games are recognized**: an executable in `Game/Binaries/Win64` (or `Win32`,
+  `Binaries/Linux`) is found, so games like Dragon Quest XI S can be added to Steam and get
+  artwork. The `-Win64-Shipping` suffix is dropped from the name, `CrashReportClient.exe` is
+  ignored, and when a launcher sits next to the real game the `*-Win64-Shipping.exe` is
+  recommended.
+- **"Auto" on the artwork card**: runs the usual VNDB → Steam store → SteamGridDB → exe icon
+  order for a game that is already in Steam, without adding it again.
+
+### Русский
+
+**Добавлено**
+- **Игры на Unreal Engine теперь определяются**: исполняемый файл в `Game/Binaries/Win64`
+  (или `Win32`, `Binaries/Linux`) находится, поэтому игры вроде Dragon Quest XI S можно
+  добавить в Steam и получить обложки. Суффикс `-Win64-Shipping` убирается из названия,
+  `CrashReportClient.exe` игнорируется, а если рядом с настоящей игрой лежит лаунчер,
+  рекомендуется именно `*-Win64-Shipping.exe`.
+- **«Авто» в карточке обложек**: запускает обычный порядок VNDB → магазин Steam → SteamGridDB →
+  иконка exe для игры, которая уже есть в Steam, без повторного добавления.
+
+## 0.8.0 — 2026-10-29
+
+### English
+
+**Added**
+- **Move a game to another disk** from its page: the folder is renamed on the same disk and
+  copied file by file across disks, with progress and a free space check. The Steam shortcut is
+  pointed at the new executable, not recreated, so the **AppID, the Proton prefix with saves and
+  settings, the name, artwork and controller layout stay**. The update backup in
+  `.deckdrop-updates/` moves along, so the last update can still be rolled back. The move is
+  refused while the game runs or has a new version unpacked aside; a game in Steam needs Steam
+  control.
+- **Disks and space** in Settings measures the library on the Deck and splits every disk into
+  games, Proton prefixes, `_inbox` archives, update backups and the rest (Steam and the system).
+  The biggest games and prefixes come first, with their folder, prefix and backup sizes; the same
+  game on two disks is marked as a likely copy. Sizes are measured in the background and cached,
+  and "Refresh" measures again. Only safe actions are offered: a prefix is never deleted here.
+- **Artwork from the Steam store**: a game that is on Steam gets its portrait, hero, logo and
+  wide image from the Steam CDN, with no key and only on an exact title match.
+- **Artwork from SteamGridDB** (optional): a free API key in Settings adds the 920×430 wide grid,
+  transparent logos and icons for games that are not on Steam. The 18+ check box applies here too.
+- In `auto`, VNDB, the Steam store and SteamGridDB fill the set in that order, each one only
+  filling the slots the previous ones left empty; the exe icon is the last resort. The game page
+  has "Steam…" and "GridDB…" pickers next to "VNDB…", and Settings has a "Check the key" button.
+
+**Changed**
+- Automatic artwork now tries the Steam store after VNDB when the set is incomplete, so more
+  games get real covers instead of capsules drawn from the exe icon.
+
+### Русский
+
+**Добавлено**
+- **Перенос игры на другой диск** со страницы игры: на одном диске папка переименовывается,
+  между дисками копируется файл за файлом — с прогрессом и проверкой свободного места. Ярлык
+  Steam не пересоздаётся, а переключается на новый exe, поэтому **AppID, префикс Proton с сейвами
+  и настройками, название, обложки и раскладка контроллера сохраняются**. Бэкап обновления
+  из `.deckdrop-updates/` переезжает вместе с папкой, так что откат последнего обновления
+  продолжает работать. Пока игра запущена или у неё распакована новая версия, перенос
+  не начнётся; для игры из Steam нужно управление Steam.
+- **«Диски и место»** в настройках измеряет библиотеку на деке и раскладывает каждый диск
+  на игры, префиксы Proton, архивы в `_inbox`, бэкапы обновлений и всё остальное (Steam
+  и система). Самые большие игры и префиксы идут первыми, с размерами папки, префикса
+  и бэкапа; одна и та же игра на двух дисках помечается как вероятная копия. Размеры считаются
+  в фоне и кэшируются, «Обновить» запускает новый подсчёт. Панель предлагает только безопасные
+  действия: префикс отсюда не удаляется.
+- **Обложки из магазина Steam**: игре, которая есть в Steam, вертикальная обложка, hero, логотип
+  и широкая картинка берутся с CDN Steam — без ключа и только при точном совпадении названия.
+- **Обложки из SteamGridDB** (по желанию): бесплатный ключ в настройках добавляет широкую сетку
+  920×430, прозрачные логотипы и иконки для игр вне Steam. Галочка «пропускать 18+» действует
+  и здесь.
+- В режиме «авто» VNDB, магазин Steam и SteamGridDB заполняют набор по порядку, каждый —
+  только пустые слоты; иконка exe — последний вариант. На странице игры рядом с «VNDB…»
+  появились «Steam…» и «GridDB…», а в настройках — кнопка «Проверить ключ».
+
+**Изменено**
+- Автопоиск обложек теперь пробует магазин Steam после VNDB, если набор неполный, поэтому
+  больше игр получают настоящие обложки вместо капсул, нарисованных из иконки exe.
+
+## 0.7.0 — 2026-10-29
+
+### English
+
+**Added**
+- **A whole game folder from your PC**: "Add" has a folder picker, and a folder can be dropped
+  onto the page. The browser sends it file by file; DeckDrop keeps the tree, moves the folder next
+  to your games and, when the settings ask for it, adds it to Steam.
+- **Torrents**: a magnet link or a link to a `.torrent` file is handed to the qBittorrent already
+  running on the Deck. DeckDrop follows the progress, takes the finished game away from the client
+  (the files stay) and finishes with it like any other download.
+- Settings → Torrents: the qBittorrent Web UI address (the usual ports are tried while it is
+  empty), the user and password (kept behind the PIN), "check the connection", and "add a game that
+  arrived as a folder or a torrent to Steam right away".
+- Both new ways end like a download: a single archive in the folder is unpacked, a nested
+  `Games/Foo/Foo.exe` folder is flattened, and an installer (`setup.exe`) is not added to Steam.
+- An upload shows its speed, and a finished folder shows the "importing" stage while it becomes
+  a game.
+
+### Русский
+
+**Добавлено**
+- **Целая папка игры с ПК**: в «Добавить» появился выбор папки, а папку можно перетащить на
+  страницу. Браузер шлёт её файл за файлом; DeckDrop сохраняет структуру, переносит папку
+  к остальным играм и, если так просят настройки, добавляет её в Steam.
+- **Торренты**: magnet-ссылка или ссылка на файл `.torrent` уходит в qBittorrent, который уже
+  работает на деке. DeckDrop следит за загрузкой, забирает готовую игру у клиента (сами файлы
+  остаются) и доводит её до конца как любое другое скачивание.
+- Настройки → «Торренты»: адрес Web UI qBittorrent (пока пуст — ищем на обычных портах),
+  пользователь и пароль (под PIN), «проверить связь» и «сразу добавлять в Steam игру, пришедшую
+  папкой или торрентом».
+- Оба новых способа заканчиваются как скачивание: единственный архив в папке распаковывается,
+  вложенная папка `Games/Foo/Foo.exe` разворачивается, а установщик (`setup.exe`) в Steam не
+  добавляется.
+- У загрузки видно скорость, а готовая папка показывает стадию «разбираю», пока становится игрой.
+
 ## 0.6.0 — 2026-10-07
 
 ### English

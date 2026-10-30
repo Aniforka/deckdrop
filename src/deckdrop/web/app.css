@@ -145,3 +145,9 @@ label.chk input{width:18px;height:18px;accent-color:var(--accent);flex:none}
 body.selecting>.wrap{padding-bottom:120px}
 @media (max-width:560px){#selbar #sdl,#selbar #sdel{flex:1}}
 .updbox{margin-top:12px;padding:12px 14px;border:1px solid #4cc2ff44;border-radius:12px;background:#4cc2ff0d}.updbox .hint{margin-top:6px}.updbox .btns{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+.sect{font-size:.75em;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 6px}
+.sbar{display:flex;height:10px;border-radius:999px;overflow:hidden;background:#ffffff10;margin:8px 0 10px}
+.sbar i{display:block;height:100%}
+.legend{display:flex;gap:10px 14px;flex-wrap:wrap;font-size:.8em;color:var(--muted)}
+.legend span{display:flex;gap:6px;align-items:center;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}

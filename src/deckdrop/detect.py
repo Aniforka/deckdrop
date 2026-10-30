@@ -17,6 +17,9 @@ GENERIC_STEMS = {"game", "start", "launcher", "play", "run", "main", "app", "lau
                  "bgi", "cmvs32", "cmvs64", "yuris", "advhd", "malie", "rugp", "system", "ayame",
                  "game-32", "game-64", "exe", "win", "windows", "x64", "x86"}
 NAME_EXT_RE = re.compile(r"\.(exe|sh|x86_64|x86)$", re.I)
+# Unreal Engine ships "Game-Win64-Shipping.exe"; the suffix is not part of the game's name
+UNREAL_SUFFIX = re.compile(r"[-_ ](?:win32|win64|linux)(?:[-_ ]shipping)?$", re.I)
+SHIPPING_STEM = re.compile(r"[-_ ](?:win32|win64)(?:[-_ ]shipping)?$", re.I)
 
 
 def strip_exe_ext(name):
@@ -24,16 +27,18 @@ def strip_exe_ext(name):
 
 
 def is_generic_stem(stem):
+    stem = UNREAL_SUFFIX.sub("", stem or "")
     return (stem.lower() in GENERIC_STEMS or len(stem) < 3
             or bool(re.fullmatch(r"(game|start|launcher|play)[-_ ]?\d*", stem, re.I)))
 
 
 def clean_title(raw):
     """Library-name cleanup: no extension, no (1)/[RUS]/(2019) tags, no version numbers,
-    underscores -> spaces, first letter capitalised."""
+    no Unreal's -Win64-Shipping suffix, underscores -> spaces, first letter capitalised."""
     base = strip_exe_ext(raw)
     base = re.sub(r"[\[\(].*?[\]\)]", " ", base)
     base = re.sub(r"(?<![A-Za-z0-9])[vV]\.?\d+(\.\d+)*[a-z]?(?![A-Za-z0-9])", " ", base)
+    base = UNREAL_SUFFIX.sub("", base)
     base = re.sub(r"[_]+", " ", base)
     base = re.sub(r"\s+", " ", base).strip(" -_.")
     return base[:1].upper() + base[1:] if base else ""
@@ -79,7 +84,14 @@ def norm_title(s):
     return re.sub("[^a-z0-9\u0430-\u044f\u0451]+", "", s.lower())   # keeps Cyrillic titles
 
 
-EXE_PATTERNS = ("*.exe", "*/*.exe", "*.sh", "*/*.sh", "*.x86_64", "*/*.x86_64")
+EXE_PATTERNS = (
+    "*.exe", "*/*.exe",
+    "Binaries/Win64/*.exe", "*/Binaries/Win64/*.exe",
+    "Binaries/Win32/*.exe", "*/Binaries/Win32/*.exe",
+    "Binaries/Linux/*.sh", "*/Binaries/Linux/*.sh",
+    "Binaries/Linux/*.x86_64", "*/Binaries/Linux/*.x86_64",
+    "*.sh", "*/*.sh", "*.x86_64", "*/*.x86_64",
+)
 # The page asks for the game list every second, and globbing a game means listing every folder
 # right under it (a Unity game's _Data alone holds thousands of files). The patterns only look at
 # the game folder and its direct subfolders, and a folder's mtime changes whenever an entry is
@@ -142,4 +154,10 @@ def recommend(exes):
     linux = [e for e in exes if is_linux_exe(e)]
     win = [e for e in exes if not is_linux_exe(e)]
     pool = (linux or win) if STATE.get("prefer_linux", True) else (win or linux)
-    return min(pool, key=lambda e: (e.count("/"), len(e))) if pool else None
+
+    def score(path):
+        # Unreal's *-Win64-Shipping.exe is the game itself even when a launcher sits at the root
+        shipping = bool(SHIPPING_STEM.search(Path(path).stem))
+        return (0 if shipping else 1, path.count("/"), len(path))
+
+    return min(pool, key=score) if pool else None

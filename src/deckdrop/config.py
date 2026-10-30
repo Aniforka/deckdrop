@@ -29,7 +29,7 @@ VNDB_UA = f"DeckDrop/{__version__} (Steam Deck cover art)"
 ARCHIVE_EXTS = (".zip", ".7z", ".rar", ".tar", ".tgz", ".txz", ".tbz2",
                 ".tar.gz", ".tar.xz", ".tar.bz2")
 # executables that are almost never the game itself
-SKIP_EXE = re.compile(r"unins|vc_?redist|dxsetup|dxwebsetup|crashhandler|"
+SKIP_EXE = re.compile(r"unins|vc_?redist|dxsetup|dxwebsetup|crashhandler|crashreportclient|"
                       r"^python|notification_helper|^setup_?vc|^unitycrash", re.I)
 LINUX_EXTS = (".sh", ".x86_64", ".x86")
 CHUNK = 1 << 20

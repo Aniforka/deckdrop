@@ -14,15 +14,19 @@ class Job:
     def __init__(self, kind, label, root=None):
         Job._seq += 1
         self.id = Job._seq
-        self.kind = kind            # download | upload | extract
+        self.kind = kind            # download | upload | extract | torrent
         self.label = label
-        self.status = "queued"      # queued resolving downloading uploading extracting needs_password done error
+        self.status = "queued"      # queued resolving downloading uploading extracting importing needs_password done error
         #                             update_ready (a new version unpacked aside, waiting on the game page)
         self.done = 0
         self.total = 0
+        self.speed = None           # bytes/s measured by someone else (a torrent client); None = derive it
         self.file = None
         self.game_dir = None
+        self.game = None            # a move: the game folder before the move
+        self.new_path = None        # a move: the folder after it
         self.error = None
+        self.note = None            # a line of good news for the UI, e.g. "added to Steam as ..."
         self.cancel = False
         self.work = None            # file or folder being written now, spared by the inbox cleanup
         self.update = None          # {game, exe, title}: a new version of that game, not a new game
@@ -34,8 +38,10 @@ class Job:
         return {
             "id": self.id, "kind": self.kind, "label": self.label, "status": self.status,
             "done": self.done, "total": self.total,
-            "speed": int(self.done / elapsed) if self.status in ("downloading", "uploading") else 0,
+            "speed": self.speed if self.speed is not None else
+            (int(self.done / elapsed) if self.status in ("downloading", "uploading", "moving") else 0),
             "file": self.file, "game_dir": self.game_dir, "error": self.error,
+            "note": self.note, "game": self.game, "new_path": self.new_path,
             "disk": disk_label_for(self.root),
             "update": (self.update or {}).get("title"),
             "update_game": (self.update or {}).get("game"),
@@ -44,8 +50,8 @@ class Job:
 
 JOBS = {}
 LOCK = threading.Lock()
-ACTIVE = ("queued", "resolving", "downloading", "uploading", "extracting")
-CANCELLABLE = ("queued", "resolving", "downloading")
+ACTIVE = ("queued", "resolving", "downloading", "uploading", "extracting", "importing", "moving")
+CANCELLABLE = ("queued", "resolving", "downloading", "moving")
 
 
 def new_job(kind, label, root=None):

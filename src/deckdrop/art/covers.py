@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..art.ffmpeg import ff_cover, ff_fit_blur, ff_logo, ff_run
 from ..art.images import compose, dominant_color, load_icon, png_encode
+from . import webcovers
 from ..config import FFMPEG, PNG_SIG, VNDB_UA, log
 from ..detect import clean_title, game_exe_path, norm_title, pretty_name
 from ..i18n import tr
@@ -218,6 +219,7 @@ def art_current(game_dir, exe):
         slots[slot] = ({"url": f"/art/{appid}/{slot}?v={f.stat().st_mtime_ns}", "size": f.stat().st_size,
                         "ext": f.suffix.lstrip(".").lower()} if f else None)
     return {"appid": appid, "source": rec.get("art_source"), "vndb_title": rec.get("vndb_title"),
+            "art_title": rec.get("art_title"), "art_id": rec.get("art_id"),
             "note": rec.get("art_note"), "error": rec.get("art_error"), "live": CDP.available(), "slots": slots}
 
 
@@ -315,12 +317,12 @@ def custom_art(game_dir, exe, slot, data):
 ART_BUSY = set()
 
 
-def art_worker(exe, force, wait_for_shortcut, source="auto", vn_id=None):
+def art_worker(exe, force, wait_for_shortcut, source="auto", vn_id=None, art_id=None, art_title=None):
     if exe in ART_BUSY:
         return
     ART_BUSY.add(exe)
     try:
-        note = ensure_art(exe, force, wait_for_shortcut, source, vn_id)
+        note = ensure_art(exe, force, wait_for_shortcut, source, vn_id, art_id, art_title)
         log(f"art for {Path(exe).name}: {note}")
     except Exception as e:  # noqa: BLE001
         log(f"art for {Path(exe).name} failed: {e}")
@@ -329,8 +331,17 @@ def art_worker(exe, force, wait_for_shortcut, source="auto", vn_id=None):
         ART_BUSY.discard(exe)
 
 
-def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=None):
-    """Build and apply the full cover set (portrait, landscape, hero, logo, icon) for a shortcut."""
+def _art_missing(images):
+    return any(slot not in images for slot in ("portrait", "landscape", "hero", "logo"))
+
+
+def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=None, art_id=None, art_title=None):
+    """Build and apply the full cover set (portrait, landscape, hero, logo, icon) for a shortcut.
+
+    Sources, in the order `auto` tries them: VNDB, the Steam store CDN, SteamGridDB, the exe
+    icon. A later source only fills the slots the earlier ones left empty, so one game can have
+    a VNDB portrait and a Steam hero without looking like two different games.
+    """
     p = Path(exe)
     rec = added_rec(str(p))
     if rec.get("art") and not force and source == "auto":
@@ -341,23 +352,64 @@ def ensure_art(exe, force=False, wait_for_shortcut=False, source="auto", vn_id=N
     if not appid:
         appid = shortcut_appid(f'"{p}"', p.stem)
         log(f"shortcut for {p.name} not in shortcuts.vdf yet; using computed appid {appid}")
-    images, info, notes = {}, {"art_source": "icon", "vndb_id": None, "vndb_title": None}, []
+    images = {}
+    info = {"art_source": "icon", "vndb_id": None, "vndb_title": None, "art_id": None, "art_title": None}
+    notes = []
     icon = load_icon(p)
+    query = rec.get("name") or (clean_title(sc["name"]) if sc and sc.get("name") else "") or pretty_name(p, p.parent)
+    query = clean_title(query) or query
+
     if source == "vndb" or (source == "auto" and STATE.get("vndb_auto", True)):
         try:
-            query = rec.get("name") or (clean_title(sc["name"]) if sc and sc.get("name") else "") or pretty_name(p, p.parent)
-            vn = vndb_pick(clean_title(query) or query, vn_id)
+            vn = vndb_pick(query, vn_id)
             if vn:
                 vimgs, vnotes = vndb_images(vn, bool(icon))
                 notes += vnotes
-                if vimgs:
-                    images.update(vimgs)
-                    info = {"art_source": "vndb", "vndb_id": vn["id"], "vndb_title": vn.get("title")}
+                for slot, value in vimgs.items():
+                    images.setdefault(slot, value)
+                if vimgs and info["art_source"] == "icon":
+                    info = {"art_source": "vndb", "vndb_id": vn["id"], "vndb_title": vn.get("title"),
+                            "art_id": None, "art_title": None}
             else:
                 notes.append(tr("vndb.no_match"))
         except Exception as e:  # noqa: BLE001
             notes.append(f"VNDB: {str(e)[:120]}")
             log(f"vndb for {p.name}: {e}")
+
+    if source == "steam" or (source == "auto" and STATE.get("art_steam", True)):
+        if source == "steam" or _art_missing(images):
+            try:
+                steam_id, steam_title = (int(art_id), art_title) if art_id else webcovers.steam_pick(query)
+                if steam_id:
+                    simgs, sinfo, sn = webcovers.steam_set(steam_id)
+                    notes += sn
+                    for slot, value in simgs.items():
+                        images.setdefault(slot, value)
+                    if simgs and info["art_source"] == "icon":
+                        info = dict(sinfo, art_title=steam_title or art_title or sinfo.get("art_title"))
+                else:
+                    notes.append(tr("steam.no_match"))
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"Steam: {str(e)[:120]}")
+                log(f"steam art for {p.name}: {e}")
+
+    if source == "griddb" or (source == "auto" and STATE.get("art_griddb", False)):
+        if source == "griddb" or _art_missing(images):
+            try:
+                grid_id, grid_title = (int(art_id), art_title) if art_id else webcovers.griddb_pick(query)
+                if grid_id:
+                    gimgs, ginfo, gn = webcovers.griddb_set(grid_id)
+                    notes += gn
+                    for slot, value in gimgs.items():
+                        images.setdefault(slot, value)
+                    if gimgs and info["art_source"] == "icon":
+                        info = dict(ginfo, art_title=grid_title or art_title or ginfo.get("art_title"))
+                else:
+                    notes.append(tr("griddb.no_match"))
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"SteamGridDB: {str(e)[:120]}")
+                log(f"griddb art for {p.name}: {e}")
+
     if icon:
         if "icon" not in images:
             images["icon"] = (png_encode(*icon), "png")

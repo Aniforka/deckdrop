@@ -124,6 +124,8 @@ class Running:
     """A program serving on a free port, the way the systemd service runs it."""
 
     def __init__(self, program, env):
+        if os.name == "nt" and env.get("HOME"):
+            env = dict(env, USERPROFILE=env["HOME"])   # Path.home() follows USERPROFILE on Windows
         self.port = free_port()
         self.log = ""
         self.proc = subprocess.Popen([sys.executable, str(program)], env=dict(env, DECKDROP_PORT=str(self.port)),
